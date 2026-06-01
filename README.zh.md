@@ -11,6 +11,10 @@
 
 ---
 
+> 你不是在养第二个脑子,你在租一个。每隔几年,房租就涨一次 — 导出要 Pro、API 收紧、公司差点倒闭(或者被收购)。你迁一次数据,丢一次结构,然后循环重来。`secondbrain` 的赌注是:一个文件,在你的 home 目录,版本化在你的 git repo。没有"迁移计划"这个概念,因为从来没有进过别人的服务器。
+
+---
+
 ## 这是什么
 
 `secondbrain` 是一个为 AI agent 设计的个人知识存储。笔记保存在 `~/.secondbrain/brain.db` 这一个 SQLite 文件中,只依赖 Python 标准库 —— 没有 `pip install`,没有 `docker compose up`,没有云服务账号。

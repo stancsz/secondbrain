@@ -11,6 +11,10 @@
 
 ---
 
+> You're not building a second brain. You're renting one. Every few years the rent goes up — the export becomes a Pro feature, the API terms tighten, the company gets acquired or nearly shuts down. You migrate, you lose structure, and the cycle starts again. `secondbrain` bets on the other side: one file, in your home directory, versioned in your git repo. No migration plan, because there's no vendor to migrate from.
+
+---
+
 ## What it is
 
 `secondbrain` is a personal knowledge store designed to be read and written by AI agents as easily as by humans. Notes are stored in a single SQLite file at `~/.secondbrain/brain.db` using the Python standard library only — no `pip install`, no `docker compose up`, no cloud account.
