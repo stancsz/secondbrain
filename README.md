@@ -44,6 +44,7 @@ Most "AI memory" products store your data in a third-party cloud, behind an API,
 - **Typed relations.** `references`, `contradicts`, `expands`, `related` with optional strength.
 - **Graph traversal.** Recursive CTE-based traverse from any drawer.
 - **Import / export.** Round-trip to JSON, Markdown (Obsidian-compatible), and CSV.
+- **Distill & archive.** Goal-based filter (`distill --query "X"`) writes a focused working brain without touching the old one (pass `--activate` to swap). Cold-storage (`archive --older-than-days 180`) moves untouched drawers out and VACUUMs the working brain. `merge-brain --from <archive>` brings them back.
 - **Phase 2 (planned).** Optional vector search via `sqlite-vec` and an MCP server interface.
 
 ## Installation
@@ -81,6 +82,18 @@ python3 scripts/brain_cli.py add "Vector Search" "See [[RAG]]" --collection AI
 # Traverse the graph
 python3 scripts/brain_cli.py related <id>
 python3 scripts/brain_cli.py traverse <id> --depth 2
+
+# Brain health
+python3 scripts/brain_cli.py summary
+
+# Distill a focused working brain (old brain stays as a point-in-time backup)
+python3 scripts/brain_cli.py distill --query "RAG" --output focused.db --activate
+
+# Cold-store untouched drawers (180d+) and shrink the working brain
+python3 scripts/brain_cli.py archive --output archive-2026.db --older-than-days 180
+
+# Bring archived drawers back
+python3 scripts/brain_cli.py merge-brain --from archive-2026.db
 
 # Export (Obsidian-compatible)
 python3 scripts/brain_cli.py export --format markdown --output brain.md

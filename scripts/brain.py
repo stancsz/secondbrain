@@ -419,3 +419,433 @@ class SecondBrain:
 
     def close(self):
         self.con.close()
+
+    # -- lifecycle / size ---------------------------------------------------
+
+    def checkpoint(self):
+        """Flush the WAL to the main DB file. Idempotent. Safe to call repeatedly.
+        Use this before renaming the db file on disk so the WAL/SHM don't follow."""
+        try:
+            self.con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.DatabaseError:
+            pass
+
+    def checkpoint_and_close(self):
+        self.checkpoint()
+        self.close()
+
+    # -- summary / distill / archive ----------------------------------------
+
+    def _humanize_bytes(self, n: int) -> str:
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if n < 1024:
+                return f"{n:.1f} {unit}" if unit != "B" else f"{n} {unit}"
+            n /= 1024
+        return f"{n:.1f} PB"
+
+    def _count_alive(self) -> int:
+        return self.con.execute(
+            "SELECT COUNT(*) c FROM drawers WHERE deleted_at IS NULL"
+        ).fetchone()["c"]
+
+    def _build_filter(self, tags=None, collection=None, query=None,
+                      since=None, until=None, alias="d"):
+        """Build a WHERE clause + params that selects drawers matching all
+        the given filters. Within a category (multiple tags) it's IN/OR.
+        Across categories it's AND."""
+        a = alias
+        clauses = [f"{a}.deleted_at IS NULL"]
+        params = []
+        if tags:
+            placeholders = ",".join("?" * len(tags))
+            clauses.append(
+                f"{a}.id IN (SELECT dt.drawer_id FROM drawer_tags dt "
+                f"JOIN tags t ON t.id = dt.tag_id WHERE t.name IN ({placeholders}))"
+            )
+            params.extend(tags)
+        if collection:
+            clauses.append(f"{a}.collection = ?")
+            params.append(collection)
+        if query:
+            clauses.append(
+                f"{a}.rowid IN (SELECT rowid FROM drawers_fts WHERE drawers_fts MATCH ?)"
+            )
+            params.append(query)
+        if since:
+            clauses.append(f"{a}.updated_at >= ?")
+            params.append(since)
+        if until:
+            clauses.append(f"{a}.updated_at <= ?")
+            params.append(until)
+        return " AND ".join(clauses), params
+
+    def _copy_subset_to(self, output_path, drawer_ids) -> dict:
+        """Copy a set of drawer_ids (and their tags/relations/pending_links)
+        into a fresh brain.db at output_path. Returns counts."""
+        output_path = Path(output_path)
+        if output_path.exists():
+            raise FileExistsError(
+                f"{output_path} already exists; remove it or pick another path"
+            )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Open fresh brain — _ensure_schema creates all tables.
+        out = SecondBrain(output_path)
+
+        if not drawer_ids:
+            out.close()
+            return {"drawers": 0, "tags": 0, "relations": 0, "pending_links": 0,
+                    "path": str(output_path)}
+
+        placeholders = ",".join("?" * len(drawer_ids))
+        ids = list(drawer_ids)
+
+        # Drawers (preserve original ids, timestamps, metadata)
+        drawer_rows = self.con.execute(
+            f"SELECT * FROM drawers WHERE id IN ({placeholders})", ids
+        ).fetchall()
+        for d in drawer_rows:
+            out.con.execute(
+                "INSERT INTO drawers (id, title, content, collection, sources, "
+                "created_at, updated_at, metadata) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (d["id"], d["title"], d["content"], d["collection"], d["sources"],
+                 d["created_at"], d["updated_at"], d["metadata"]),
+            )
+
+        # Tags: only those actually used by the subset; mint new tag ids.
+        tag_rows = self.con.execute(
+            f"SELECT dt.drawer_id, t.name FROM drawer_tags dt "
+            f"JOIN tags t ON t.id = dt.tag_id "
+            f"WHERE dt.drawer_id IN ({placeholders})", ids
+        ).fetchall()
+        tag_name_to_id = {}
+        for tn in sorted({r["name"] for r in tag_rows}):
+            tid = _uuid()
+            out.con.execute("INSERT INTO tags (id, name) VALUES (?, ?)", (tid, tn))
+            tag_name_to_id[tn] = tid
+        for r in tag_rows:
+            out.con.execute(
+                "INSERT INTO drawer_tags (drawer_id, tag_id) VALUES (?, ?)",
+                (r["drawer_id"], tag_name_to_id[r["name"]]),
+            )
+
+        # Relations: edges where BOTH endpoints are in the subset.
+        rel_rows = self.con.execute(
+            f"SELECT * FROM relations WHERE from_id IN ({placeholders}) "
+            f"AND to_id IN ({placeholders})", ids + ids
+        ).fetchall()
+        for r in rel_rows:
+            out.con.execute(
+                "INSERT INTO relations (id, from_id, to_id, relation_type, "
+                "strength, source) VALUES (?, ?, ?, ?, ?, ?)",
+                (r["id"], r["from_id"], r["to_id"], r["relation_type"],
+                 r["strength"], r["source"]),
+            )
+
+        # Pending links: from a drawer in the subset (target may or may not be).
+        pend_rows = self.con.execute(
+            f"SELECT * FROM pending_links WHERE from_id IN ({placeholders})", ids
+        ).fetchall()
+        for r in pend_rows:
+            out.con.execute(
+                "INSERT INTO pending_links (id, from_id, target_title) "
+                "VALUES (?, ?, ?)",
+                (r["id"], r["from_id"], r["target_title"]),
+            )
+
+        out.con.commit()
+        out.close()
+        return {
+            "drawers": len(drawer_rows),
+            "tags": len(tag_name_to_id),
+            "relations": len(rel_rows),
+            "pending_links": len(pend_rows),
+            "path": str(output_path),
+        }
+
+    def summary(self, cold_threshold_days: int = 180) -> dict:
+        """Brain health snapshot: size, drawer counts (alive / cold / soft-del),
+        relation counts, pending links, and a one-line recommendation.
+
+        Cold = alive drawers whose updated_at is older than cold_threshold_days."""
+        size_bytes = self.db_path.stat().st_size if self.db_path.exists() else 0
+        alive = self._count_alive()
+        cold = self.con.execute(
+            "SELECT COUNT(*) c FROM drawers WHERE deleted_at IS NULL "
+            "AND updated_at < datetime('now', ?)",
+            (f"-{int(cold_threshold_days)} days",),
+        ).fetchone()["c"]
+        soft = self.con.execute(
+            "SELECT COUNT(*) c FROM drawers WHERE deleted_at IS NOT NULL"
+        ).fetchone()["c"]
+        rels = {r["source"]: r["c"] for r in self.con.execute(
+            "SELECT source, COUNT(*) c FROM relations GROUP BY source"
+        ).fetchall()}
+        pending = self.con.execute(
+            "SELECT COUNT(*) c FROM pending_links"
+        ).fetchone()["c"]
+
+        size_mb = size_bytes / 1024 / 1024
+        rec = None
+        if alive and (cold / alive) > 0.5:
+            rec = "archive"
+        if size_mb > 100:
+            rec = rec or "archive"
+        if alive and (cold / alive) > 0.7 and alive > 5000:
+            rec = "archive-then-distill"
+
+        return {
+            "db_path": str(self.db_path),
+            "size_bytes": size_bytes,
+            "size_human": self._humanize_bytes(size_bytes),
+            "drawers": {
+                "alive": alive,
+                "cold": cold,
+                "soft_deleted": soft,
+                "cold_threshold_days": cold_threshold_days,
+            },
+            "relations": rels,
+            "pending_links": pending,
+            "recommendation": rec,
+        }
+
+    def distill(self, output_path, tags=None, collection=None, query=None,
+                since=None, until=None, include_related_depth: int = 0,
+                min_strength: float = 0.0) -> dict:
+        """Create a new brain.db at output_path containing only the drawers
+        that match the given filters. NON-DESTRUCTIVE: the working brain is
+        not modified. The CLI's --activate flag handles swapping.
+
+        Filters AND across categories (a drawer must satisfy all given filters)
+        and OR within a category (any tag, any collection). Returns counts.
+        """
+        if not any([tags, collection, query, since, until]):
+            raise ValueError(
+                "distill needs at least one filter: --tag / --collection / "
+                "--query / --since / --until"
+            )
+        where, params = self._build_filter(tags, collection, query, since, until)
+        seed_ids = {r["id"] for r in self.con.execute(
+            f"SELECT id FROM drawers d WHERE {where}", params
+        ).fetchall()}
+
+        # Optional N-hop expansion around the seeds.
+        if include_related_depth > 0 and seed_ids:
+            for sid in list(seed_ids):
+                for row in self.traverse(sid, depth=include_related_depth,
+                                         limit=10**6):
+                    seed_ids.add(row["id"])
+
+        if not seed_ids:
+            return {"drawers": 0, "tags": 0, "relations": 0,
+                    "pending_links": 0, "path": str(Path(output_path)),
+                    "note": "no drawers matched the filter"}
+
+        return self._copy_subset_to(output_path, seed_ids)
+
+    def archive(self, output_path, older_than_days: int = 180,
+                before_date: str = None, tags=None, collection=None,
+                dry_run: bool = False) -> dict:
+        """Move cold drawers to output_path (a new brain.db) and hard-delete
+        them from the working brain. The whole operation is atomic — if the
+        copy fails, nothing is deleted.
+
+        Default criterion: updated_at < (now - older_than_days).
+        If before_date is given, use that instead.
+        If tags/collection are given, archive matching drawers regardless of age.
+        """
+        if tags or collection or before_date is not None:
+            where, params = self._build_filter(tags, collection,
+                                               since=None, until=before_date)
+            target_ids = {r["id"] for r in self.con.execute(
+                f"SELECT id FROM drawers d WHERE {where}", params
+            ).fetchall()}
+            criterion = "explicit filter"
+        else:
+            target_ids = {r["id"] for r in self.con.execute(
+                "SELECT id FROM drawers WHERE deleted_at IS NULL "
+                "AND updated_at < datetime('now', ?)",
+                (f"-{int(older_than_days)} days",),
+            ).fetchall()}
+            criterion = f"untouched {older_than_days}+ days"
+
+        alive_before = self._count_alive()
+        if not target_ids:
+            return {
+                "archived": 0,
+                "would_archive": 0,
+                "remaining": alive_before,
+                "would_remain": alive_before,
+                "criterion": criterion,
+                "path": str(Path(output_path)),
+                "dry_run": dry_run,
+            }
+        if target_ids == {r["id"] for r in self.con.execute(
+                "SELECT id FROM drawers WHERE deleted_at IS NULL").fetchall()}:
+            raise ValueError(
+                "archive would remove every alive drawer — refusing. "
+                "Pass a narrower filter or check your --older-than-days."
+            )
+
+        if dry_run:
+            return {
+                "would_archive": len(target_ids),
+                "would_remain": alive_before - len(target_ids),
+                "criterion": criterion,
+                "path": str(Path(output_path)),
+                "dry_run": True,
+            }
+
+        # Atomic: copy first, then delete. If the copy fails the working
+        # brain is untouched.
+        copy_stats = self._copy_subset_to(output_path, target_ids)
+
+        placeholders = ",".join("?" * len(target_ids))
+        self.con.execute(
+            f"DELETE FROM drawers WHERE id IN ({placeholders})", list(target_ids)
+        )
+        self.con.commit()
+        self.checkpoint()  # flush WAL so renames are clean
+        self.con.execute("VACUUM")  # reclaim space
+
+        size_after = self.db_path.stat().st_size
+        return {
+            "archived": copy_stats["drawers"],
+            "archived_relations": copy_stats["relations"],
+            "remaining": self._count_alive(),
+            "criterion": criterion,
+            "path": str(Path(output_path)),
+            "size_remaining_bytes": size_after,
+            "size_remaining_human": self._humanize_bytes(size_after),
+        }
+
+    def merge_brain(self, source_path) -> dict:
+        """Bring drawers from another brain.db into this one. Idempotent:
+        drawers whose id already exists are skipped (relations, tags and
+        pending_links are likewise skipped via UNIQUE constraints)."""
+        source_path = Path(source_path)
+        if not source_path.exists():
+            raise FileNotFoundError(source_path)
+        # Source is read-only; never use the same DB_PATH global.
+        src = SecondBrain(source_path)
+
+        # Build id-set of already-present drawers for fast skip.
+        existing = {r["id"] for r in self.con.execute("SELECT id FROM drawers").fetchall()}
+        existing_tag_names = {r["name"] for r in self.con.execute("SELECT name FROM tags").fetchall()}
+
+        # Tags: copy any missing tag names (mint new ids).
+        src_tag_rows = src.con.execute("SELECT id, name FROM tags").fetchall()
+        src_tag_id_to_name = {r["id"]: r["name"] for r in src_tag_rows}
+        name_to_new_id = {}
+        for name in {r["name"] for r in src_tag_rows}:
+            if name not in existing_tag_names:
+                tid = _uuid()
+                self.con.execute("INSERT INTO tags (id, name) VALUES (?, ?)", (tid, name))
+                name_to_new_id[name] = tid
+                existing_tag_names.add(name)
+        # Map source tag id -> our tag id (either pre-existing or newly minted).
+        # For tags that already existed by name, find our id.
+        src_tag_id_to_our_id = {}
+        for src_tid, name in src_tag_id_to_name.items():
+            if name in name_to_new_id:
+                src_tag_id_to_our_id[src_tid] = name_to_new_id[name]
+            else:
+                src_tag_id_to_our_id[src_tid] = self.con.execute(
+                    "SELECT id FROM tags WHERE name = ?", (name,)
+                ).fetchone()["id"]
+
+        # Drawers: skip those we already have.
+        src_drawer_rows = src.con.execute("SELECT * FROM drawers").fetchall()
+        added_drawers = 0
+        skipped_drawers = 0
+        newly_added_ids = []
+        for d in src_drawer_rows:
+            if d["id"] in existing:
+                skipped_drawers += 1
+                continue
+            self.con.execute(
+                "INSERT INTO drawers (id, title, content, collection, sources, "
+                "created_at, updated_at, metadata) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (d["id"], d["title"], d["content"], d["collection"], d["sources"],
+                 d["created_at"], d["updated_at"], d["metadata"]),
+            )
+            existing.add(d["id"])
+            added_drawers += 1
+            newly_added_ids.append(d["id"])
+
+        # Drawer_tags: re-bind source tag ids to our tag ids.
+        src_dt_rows = src.con.execute("SELECT drawer_id, tag_id FROM drawer_tags").fetchall()
+        added_tags_links = 0
+        for r in src_dt_rows:
+            if r["drawer_id"] not in existing:
+                continue
+            our_tag_id = src_tag_id_to_our_id.get(r["tag_id"])
+            if our_tag_id is None:
+                continue
+            self.con.execute(
+                "INSERT OR IGNORE INTO drawer_tags (drawer_id, tag_id) "
+                "VALUES (?, ?)",
+                (r["drawer_id"], our_tag_id),
+            )
+            added_tags_links += 1
+
+        # Relations: only those touching drawers we now have.
+        src_rel_rows = src.con.execute(
+            "SELECT * FROM relations"
+        ).fetchall()
+        added_rels = 0
+        for r in src_rel_rows:
+            if r["from_id"] not in existing or r["to_id"] not in existing:
+                continue
+            self.con.execute(
+                "INSERT OR IGNORE INTO relations "
+                "(id, from_id, to_id, relation_type, strength, source) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (r["id"], r["from_id"], r["to_id"], r["relation_type"],
+                 r["strength"], r["source"]),
+            )
+            added_rels += 1
+
+        # Pending links: only from drawers we now have.
+        src_pend_rows = src.con.execute(
+            "SELECT * FROM pending_links"
+        ).fetchall()
+        added_pend = 0
+        for r in src_pend_rows:
+            if r["from_id"] not in existing:
+                continue
+            self.con.execute(
+                "INSERT OR IGNORE INTO pending_links "
+                "(id, from_id, target_title) VALUES (?, ?, ?)",
+                (r["id"], r["from_id"], r["target_title"]),
+            )
+            added_pend += 1
+
+        # Re-derive wikilinks for newly added drawers so cross-refs into
+        # the existing brain resolve correctly.
+        for did in newly_added_ids:
+            d = self.con.execute(
+                "SELECT content FROM drawers WHERE id=?", (did,)
+            ).fetchone()
+            if d:
+                self._sync_wikilinks(did, d["content"])
+        # And resolve any pending links pointing at the new titles.
+        for did in newly_added_ids:
+            d = self.con.execute(
+                "SELECT title FROM drawers WHERE id=?", (did,)
+            ).fetchone()
+            if d:
+                self._resolve_pending_to(did, d["title"])
+
+        self.con.commit()
+        src.close()
+        return {
+            "drawers_added": added_drawers,
+            "drawers_skipped": skipped_drawers,
+            "tag_links_added": added_tags_links,
+            "relations_added": added_rels,
+            "pending_links_added": added_pend,
+            "source_path": str(source_path),
+        }

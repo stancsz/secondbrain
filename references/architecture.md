@@ -13,6 +13,7 @@ needs `SKILL.md`.
 7. v1 → v2 migration
 8. Storage, durability, performance targets
 9. What changed from v2 → v2.1
+10. Distill & archive — see [distill-archive.md](./distill-archive.md)
 
 ---
 

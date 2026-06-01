@@ -44,6 +44,7 @@
 - **类型化关系。** `references`(引用)、`contradicts`(矛盾)、`expands`(扩展)、`related`(相关),可附 strength(强度)权重。
 - **图谱遍历。** 基于递归 CTE,从任一节点出发遍历子图。
 - **导入 / 导出。** 支持 JSON、Markdown(兼容 Obsidian)、CSV 三种格式的双向转换。
+- **Distill 与 Archive。** 目标导向的 `distill --query "X"` 写出一个聚焦的工作脑子(原脑子不动,加 `--activate` 才替换);`archive --older-than-days 180` 把长期不碰的笔记搬到冷库,顺手 VACUUM 把工作脑子收小。要找回来用 `merge-brain --from <archive>`。
 - **Phase 2(规划中)。** 通过 `sqlite-vec` 提供的可选向量检索,以及 MCP server 接口。
 
 ## 安装
@@ -81,6 +82,18 @@ python3 scripts/brain_cli.py add "Vector Search" "见 [[RAG]]" --collection AI
 # 遍历图谱
 python3 scripts/brain_cli.py related <id>
 python3 scripts/brain_cli.py traverse <id> --depth 2
+
+# 脑子健康度
+python3 scripts/brain_cli.py summary
+
+# Distill:基于目标做聚焦,原脑子留着做时间点备份
+python3 scripts/brain_cli.py distill --query "RAG" --output focused.db --activate
+
+# Archive:把长期不碰的笔记挪到冷库,工作脑子收小
+python3 scripts/brain_cli.py archive --output archive-2026.db --older-than-days 180
+
+# 把归档的笔记找回来
+python3 scripts/brain_cli.py merge-brain --from archive-2026.db
 
 # 导出(兼容 Obsidian)
 python3 scripts/brain_cli.py export --format markdown --output brain.md

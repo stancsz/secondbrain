@@ -36,6 +36,9 @@ user didn't give — infer sensible ones and state your assumption in one line.
 | "What's connected to N?" | `related <id>`, or `traverse <id> --depth 2` to walk further. |
 | "Delete N" | `delete <id>` (soft by default — recoverable). Only pass `--hard` if they insist on permanent. |
 | "Export my notes" / "back up" | `export --format markdown` (Obsidian-compatible) or `json`. |
+| "Brain is getting big / 脑子不够用了 / clean up / how big is my brain?" | Run `summary` first. If it recommends action, propose it; don't act unprompted on the data. |
+| "I want to focus on topic X" / "give me a smaller brain for Y" | `distill --query X --output focused.db`. Non-destructive; old brain untouched unless they pass `--activate` to swap. |
+| "Archive old stuff" / "move cold notes out of the way" | `archive --output archive-2026.db` (default: untouched 180d+). Destructive: copies to archive then hard-deletes from working. `merge-brain --from archive-2026.db` brings them back. |
 
 ---
 
@@ -55,6 +58,10 @@ command for structured output you can parse; omit it for human-readable text.
 - `related <id> [--source manual|wikilink|all]`  /  `traverse <id> [--depth N]`
 - `export [--collection C] [--format json|markdown|csv] [--output PATH]`
 - `import <path> [--merge|--replace]`  /  `stats [--collection C]`
+- `summary [--cold-days 180]` — size, drawer counts (alive / cold / soft-deleted), pending links, recommendation
+- `distill --output <path> [--tag T] [--collection C] [--query Q] [--since D] [--until D] [--include-related-depth N] [--activate]` — write a filtered working brain to a new file; old brain stays put unless `--activate`
+- `archive --output <path> [--older-than-days N] [--before D] [--tag T] [--collection C] [--dry-run]` — move cold/filtered drawers to a new brain.db, hard-delete from working
+- `merge-brain --from <path>` — bring another brain's drawers into the working brain (idempotent)
 
 ---
 
@@ -89,6 +96,24 @@ use `--hard` (permanent, cascades to relations) when the user explicitly wants i
 **Citing.** When you answer a knowledge question from the brain, reference the drawers you
 used by their short id, e.g. "(per drawer `be452d8b`)", so the user can `show` them.
 
+**Proactive brain health.** Don't wait for the user to complain about size — at the start
+of a long session, or when the user asks "how big is my brain / 脑子够用吗", run `summary`
+and surface any recommendation. If `summary` returns a recommendation, *propose* the
+action in one line ("You have 32K cold drawers — want me to archive them?") — never run
+`archive` or `distill --activate` unprompted, since both are destructive (or at least
+rearrange the canonical file).
+
+**Distill is non-destructive by default.** `distill` writes a new brain.db and leaves
+the working brain untouched. The user can inspect the new file, then re-run with
+`--activate` to make it the new working brain (which renames the old to `.bak-TIMESTAMP`).
+Always show the user where the new file is, and only suggest `--activate` after they
+confirm.
+
+**Archive is destructive; merge-brain is its undo.** `archive` *hard-deletes* from the
+working brain after copying the cold drawers out. There is no `--soft` flag. If the user
+might want them back, suggest running with `--dry-run` first to see what would be moved,
+or remind them that `merge-brain --from <archive>` is the round-trip.
+
 ---
 
 ## Examples
@@ -114,6 +139,11 @@ See `references/architecture.md` for the data model, the FTS5 correctness notes
 (external-content triggers, soft-delete filtering), wikilink resolution rules, the
 Phase 2 MCP interface contract, the v1→v2 migration, and performance targets. Read it
 only when modifying the schema or debugging the store — day-to-day use needs only this file.
+
+For the distill / archive / merge-brain operations, see
+`references/distill-archive.md` — it covers the filter semantics, what gets
+copied, atomicity guarantees, the `--activate` swap, and the connection to
+agent context compression.
 
 Key guarantees the implementation enforces and you can rely on:
 - Soft-deleted drawers never appear in `search`, `list`, `related`, or `traverse`.

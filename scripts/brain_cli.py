@@ -17,13 +17,27 @@ Usage:
   python brain_cli.py export [--collection C] [--format json|markdown|csv] [--output PATH]
   python brain_cli.py import <path> [--merge|--replace]
   python brain_cli.py stats [--collection C]
+  python brain_cli.py summary [--cold-days 180]
+  python brain_cli.py distill --output <path> [--tag T] [--collection C] [--query Q] [--activate]
+  python brain_cli.py archive --output <path> [--older-than-days 180] [--dry-run]
+  python brain_cli.py merge-brain --from <path>
 
 Output is human-readable. Pass --json to any read command for machine output.
 """
 import argparse
 import json
+import os
 import sys
+from datetime import datetime
+from pathlib import Path
 from brain import SecondBrain
+
+# Windows consoles default to cp1252; emojis break. Reconfigure if possible.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except (AttributeError, OSError):
+    pass
 
 
 def _short(s, n=120):
@@ -81,6 +95,36 @@ def main():
     im.add_argument("--merge", action="store_true"); im.add_argument("--replace", action="store_true")
 
     st = sub.add_parser("stats"); st.add_argument("--collection")
+
+    sm = sub.add_parser("summary")
+    sm.add_argument("--cold-days", type=int, default=180,
+                    help="threshold (days) for a drawer to count as 'cold'")
+
+    di = sub.add_parser("distill")
+    di.add_argument("--output", required=True, help="path for the new distilled brain.db")
+    di.add_argument("--tag", action="append", help="drawer must have this tag (repeatable)")
+    di.add_argument("--collection", help="drawer must be in this collection")
+    di.add_argument("--query", help="FTS query the drawer must match")
+    di.add_argument("--since", help="drawer updated_at >= this ISO date")
+    di.add_argument("--until", help="drawer updated_at <= this ISO date")
+    di.add_argument("--include-related-depth", type=int, default=0,
+                    help="expand matches by N hops via the relations graph")
+    di.add_argument("--activate", action="store_true",
+                    help="after writing, rename current brain.db to .bak-TIMESTAMP "
+                         "and rename the new file to brain.db")
+
+    ar = sub.add_parser("archive")
+    ar.add_argument("--output", required=True, help="path for the archive brain.db")
+    ar.add_argument("--older-than-days", type=int, default=180,
+                    help="archive drawers untouched for at least N days (default 180)")
+    ar.add_argument("--before", help="archive drawers with updated_at <= this ISO date")
+    ar.add_argument("--tag", action="append", help="archive drawers with this tag (repeatable)")
+    ar.add_argument("--collection", help="archive drawers in this collection")
+    ar.add_argument("--dry-run", action="store_true", help="show counts without writing")
+
+    mb = sub.add_parser("merge-brain")
+    mb.add_argument("--from", dest="source", required=True,
+                    help="path to a brain.db whose drawers will be merged into the working brain")
 
     args = p.parse_args()
     b = SecondBrain(args.db) if args.db else SecondBrain()
@@ -208,6 +252,144 @@ def main():
                  f"Top tags: {', '.join(f'{t['name']}×{t['n']}' for t in s['tags']) or 'none'}\n"
                  f"Collections: {', '.join(f'{c['name']}({c['n']})' for c in s['collections'])}")
         out(s, human)
+
+    elif args.cmd == "summary":
+        s = b.summary(cold_threshold_days=args.cold_days)
+        d = s["drawers"]
+        rels = s["relations"]
+        rec_lines = []
+        if s["recommendation"] == "archive":
+            rec_lines = [
+                "",
+                f"💡 Recommendation: archive",
+                f"   You have {d['cold']} cold drawers (untouched "
+                f"{d['cold_threshold_days']}+ days, {d['cold']*100//max(d['alive'],1)}% of total).",
+                f"   Run: brain archive --output ~/.secondbrain/archive-$(date +%F).db",
+            ]
+        elif s["recommendation"] == "archive-then-distill":
+            rec_lines = [
+                "",
+                f"💡 Recommendation: archive then distill",
+                f"   Brain is {s['size_human']} with {d['cold']} cold drawers. "
+                f"Archive first, then distill a focused working copy.",
+            ]
+        human = (
+            f"🧠 SecondBrain summary\n\n"
+            f"  Path:     {s['db_path']}\n"
+            f"  Size:     {s['size_human']}\n"
+            f"  Drawers:  {d['alive']:,} alive   {d['cold']:,} cold ({d['cold_threshold_days']}d+)   "
+            f"{d['soft_deleted']:,} soft-deleted\n"
+            f"  Relations: {sum(rels.values()):,} total   "
+            f"({', '.join(f'{k}×{v}' for k, v in rels.items()) or 'none'})\n"
+            f"  Pending:  {s['pending_links']:,} unresolved wikilinks"
+        ) + "\n".join(rec_lines)
+        out(s, human)
+
+    elif args.cmd == "distill":
+        tags = args.tag or []
+        try:
+            res = b.distill(args.output, tags=tags or None,
+                            collection=args.collection, query=args.query,
+                            since=args.since, until=args.until,
+                            include_related_depth=args.include_related_depth)
+        except (ValueError, FileExistsError) as ex:
+            out({"error": str(ex)}, f"❌ {ex}")
+            b.close()
+            sys.exit(1)
+        if res["drawers"] == 0:
+            out(res, f"⚠ No drawers matched. Nothing written to {res['path']}.")
+            b.close()
+            sys.exit(0)
+
+        # Optionally swap working brain with the new file.
+        if args.activate:
+            working = b.db_path.resolve()
+            new_path = Path(args.output).resolve()
+            if new_path == working:
+                b.close()
+                sys.exit("❌ --output is the same as the working brain; refusing to swap.")
+            if new_path.parent != working.parent:
+                # Move into the same dir as the working brain so the swap is local.
+                target = working.parent / new_path.name
+                if target.exists():
+                    b.close()
+                    sys.exit(f"❌ {target} already exists; pick a different --output.")
+                os.replace(new_path, target)
+                new_path = target
+
+            ts = datetime.now().strftime("%Y%m%dT%H%M%S")
+            backup = working.with_suffix(f".db.bak-{ts}")
+            b.checkpoint_and_close()
+            os.replace(working, backup)
+            os.replace(new_path, working)
+            human = (
+                f"✨ Distilled {res['drawers']:,} drawers → {working}\n"
+                f"   tags:        {res['tags']:,}\n"
+                f"   relations:   {res['relations']:,}\n"
+                f"   pending:     {res['pending_links']:,}\n"
+                f"   old brain →  {backup}\n"
+                f"   new working: {working}\n"
+                f"   old brain is now a point-in-time backup; restore with `cp {backup} {working}`"
+            )
+            out({"distill": res, "backup": str(backup), "activated": str(working)}, human)
+            sys.exit(0)
+
+        human = (
+            f"✨ Distilled {res['drawers']:,} drawers → {args.output}\n"
+            f"   tags:      {res['tags']:,}\n"
+            f"   relations: {res['relations']:,}\n"
+            f"   pending:   {res['pending_links']:,}\n"
+            f"\n   (working brain untouched. Use --activate to swap.)"
+        )
+        out(res, human)
+
+    elif args.cmd == "archive":
+        tags = args.tag or []
+        try:
+            res = b.archive(args.output, older_than_days=args.older_than_days,
+                            before_date=args.before, tags=tags or None,
+                            collection=args.collection, dry_run=args.dry_run)
+        except (ValueError, FileExistsError) as ex:
+            out({"error": str(ex)}, f"❌ {ex}")
+            b.close()
+            sys.exit(1)
+        if args.dry_run:
+            human = (
+                f"🔍 Dry run — no files written\n"
+                f"   would archive:  {res['would_archive']:,} drawers (criterion: {res['criterion']})\n"
+                f"   would remain:   {res['would_remain']:,} drawers\n"
+                f"   target file:    {res['path']}"
+            )
+        elif res["archived"] == 0:
+            human = f"⚠ No drawers matched ({res['criterion']}). Nothing archived."
+        else:
+            human = (
+                f"🗄️  Archived {res['archived']:,} drawers → {res['path']}\n"
+                f"   criterion:   {res['criterion']}\n"
+                f"   relations:   {res['archived_relations']:,} archived with their drawers\n"
+                f"   remaining:   {res['remaining']:,} drawers in working brain\n"
+                f"   new size:    {res['size_remaining_human']}\n"
+                f"\n   to bring a drawer back: brain merge-brain --from {res['path']}"
+            )
+        out(res, human)
+
+    elif args.cmd == "merge-brain":
+        try:
+            res = b.merge_brain(args.source)
+        except FileNotFoundError as ex:
+            out({"error": str(ex)}, f"❌ {ex}")
+            b.close()
+            sys.exit(1)
+        human = (
+            f"🔀 Merged from {res['source_path']}\n"
+            f"   drawers added:        {res['drawers_added']:,}  "
+            f"(skipped: {res['drawers_skipped']:,} already present)\n"
+            f"   tag links added:      {res['tag_links_added']:,}\n"
+            f"   relations added:      {res['relations_added']:,}\n"
+            f"   pending links added:  {res['pending_links_added']:,}\n"
+            f"\n   wikilinks re-derived for new drawers; cross-refs auto-resolved."
+        )
+        out(res, human)
 
     b.close()
 
