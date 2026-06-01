@@ -14,26 +14,66 @@
 
 ---
 
-## 为什么这个比 mem0 / Obsidian 好?
+## 为什么这个比 [mem0 / Obsidian / Logseq / ChatGPT Memory / Notion AI / Quivr] 都好?
 
-| | mem0 | Obsidian | **secondbrain** |
-|---|---|---|---|
-| 你的数据存在哪? | 别人的云 / 别人的 Postgres | 你的硬盘 (`.md` 文件) | **你的硬盘 + 你的 git** (`brain.db`) |
-| AI agent 能直接读写吗? | ✅(API 收费) | ❌ (纯本地 markdown) | ✅(`python3 scripts/brain_cli.py …`) |
-| 全文搜索 | 云端向量 | 本地索引 (快) | **本地 FTS5 (sqlite) + 可选向量** |
-| 跨会话记忆 | 一次性 API | 手动复制粘贴 | **自动 — agent 直接调 CLI** |
-| 关系图谱 (wiki links) | ❌ | ✅(但要装插件) | ✅(写时冻结,不会漂移) |
-| Vendor lock-in | ⚠️ 高 | ✅ 无 | ✅ **无** — 一个 SQLite 文件 |
-| 装环境? | pip install + API key | 装客户端 | **零依赖,系统自带 Python 即可** |
-| 备份 | 跟 mem0 走 | 自己想办法 | **`git push` 完事** |
+> **不是把笔记托管给第三方的 SaaS。是把"你的脑子"变成一个可以 `git clone` 的小文件,然后让每一个 AI 都接上去。**
 
-### 三个核心卖点
+### 故事先讲清楚
 
-1. **🔒 你的文件都是你的。** 一个 `~/.secondbrain/brain.db`,标准 SQLite,任何客户端都能打开。没有 "数据迁出" 这个概念。
-2. **📦 你的脑子可以存在一个 GitHub repo,不怕丢。** `git push` 整个脑子上云,`git clone` 整脑子回家。mem0 倒了,Obsidian 改收费了,你还在。
-3. **🤖 AI agent 原生。** 不是给人用的笔记 App,是给 agent 用的 memory store。每个 AI 会话都自动接上你的脑子,知道"我去年写过这个"。
+十年前你的笔记存在 Evernote,后来它差点倒闭,大家连夜导出。
+五年前你的笔记存在 Notion,现在每年涨价,API 收紧,导出要 Pro。
+两年前你的"AI 记忆"存在 mem0 / ChatGPT / Claude Projects 里,服务器一关、API 一改、账号一封,你的第二大脑就没了。
+**每一次,你的脑子都在被租回来给你。**
 
-> 不是把笔记托管给第三方的 SaaS。是把"你的脑子"变成一个可以 `git clone` 的小文件,然后让每一个 AI 都接上去。
+secondbrain 走另一条路:你的脑子,一个 SQLite 文件,你的 home 目录,你的 git repo,一个 `cp` / `scp` / `git push` 就能备份到任何地方。**没有 "数据迁出" 这个概念,因为从来没有进过别人的服务器。**
+
+### 跟所有这些的对比
+
+| 工具 | 数据在哪 | AI 能直接读吗 | vendor lock-in | 跨会话记忆 | 关系图谱 | 备份 | 装环境 |
+|---|---|---|---|---|---|---|---|
+| **Notion AI** | Notion 的云 | ❌(锁在 UI 里) | ⚠️⚠️⚠️ 极强(导出丢结构) | ❌(每次重新开始) | ❌ | 跟 Notion 走 | 浏览器 |
+| **ChatGPT Memory** | OpenAI 的云 | ❌(你看不到原始) | ⚠️⚠️⚠️ 完全黑盒 | ✅(但你无法控制) | ❌ | 跟 OpenAI 走 | 浏览器 |
+| **Claude Projects** | Anthropic 的云 | ❌ | ⚠️⚠️⚠️ | ✅(项目级,跨对话) | ❌ | 跟 Anthropic 走 | 浏览器 |
+| **mem0** | 别人的 Postgres / vector DB | ✅(按 API 调用收费) | ⚠️⚠️(SDK 绑定) | ✅(API 实现) | ❌ | 跟 mem0 走 | `pip install` + API key |
+| **Obsidian** | 你硬盘的 `.md` | ❌(AI 插件另装,各自为战) | ✅ 几乎无 | ❌(要自己写脚本) | ✅(要装插件) | 自己想办法(`.md` 文件散落) | 装客户端 |
+| **Logseq** | 你硬盘的 `.md` / `.org` | ❌ | ✅ 无 | ❌ | ✅ | 同上 | 装客户端 |
+| **Anytype** | 你硬盘(IPFS-like) | ❌ | ✅ 无 | ❌ | ✅(原生) | 自己同步 | 装客户端 |
+| **Quivr / privateGPT / RAGFlow** | 本地向量 DB | ❌(给你 API) | ✅ 无 | ❌(自己接) | ❌ | 自己搞 | `docker compose up` 起服务 |
+| **Apple Notes / Google Keep / OneNote** | 厂商云 | ❌ | ⚠️⚠️⚠️(苹果/谷歌/微软) | ❌ | ❌ | 跟厂商走 | 系统自带 |
+| **Evernote** | Evernote 云 | ❌ | ⚠️⚠️⚠️(历史教训) | ❌ | ❌ | 跟 Evernote 走 | 客户端 |
+| **Roam / Tana / Mem.ai** | 厂商云 | 部分(自家 AI) | ⚠️⚠️ | 部分 | ✅ | 跟厂商走 | 浏览器 |
+| | | | | | | | |
+| **secondbrain** | **你的 `~/.secondbrain/brain.db`** | ✅ **CLI / Python 库直接调** | ✅ **零 — 一个 SQLite 文件** | ✅ **agent 原生** | ✅ **wikilink 写时冻结** | ✅ **`git push` 一个文件** | ✅ **`git clone` 然后跑** |
+
+### 三个只有 secondbrain 能给的承诺
+
+1. **🔒 你的文件都是你的。** `~/.secondbrain/brain.db` 是一个普通 SQLite 文件。`sqlite3 brain.db` 就能开,`pg_dump` 风格的备份不存在,因为不需要 — 复制粘贴就是备份。`brain.db` 的 schema 在 `scripts/schema.sql` 里,你的脑子永远是可读的、十年后可解的、跟语言无关的。
+
+2. **📦 你的脑子可以存在一个 GitHub repo,不怕丢。** `brain.db` 一个文件,几 MB 到几百 MB,`git push` 完事。mem0 倒了,Notion 改收费了,OpenAI 改了 memory 政策,你还在 — 因为你根本不在他们那儿。私人 repo,免费,加密,带历史 diff。
+
+3. **🤖 AI agent 原生,不是给人用的。** Obsidian 给人看,Notion 给人点,mem0 给另一个 AI 调。secondbrain 是 **给任何 agent 调的** — `python3 scripts/brain_cli.py search "X"` 一行命令,agent 就有上下文。Claude Code、Cursor、Continue、Aider、自家脚本,谁接谁用,不用付 API 费,不用注册账号,数据不过境。
+
+### 这不是为所有人设计的
+
+secondbrain 适合你,如果:
+- 你用 AI agent (Claude Code / Cursor / Aider) 而且想让它"记得"你说过什么
+- 你信不过 SaaS 把你的脑子存在别人的 Postgres 里
+- 你想要一个 `git clone` 就能搬家、`rm` 就能销毁的脑子
+- 你能接受一个 200 行的 Python CLI(没有华丽的 UI)
+
+secondbrain **不适合**你,如果:
+- 你想要一个漂亮的、所见即所得的笔记 GUI → 用 Obsidian
+- 你想给非技术朋友用 → 用 Notion / Apple Notes
+- 你想做团队的 wiki → 用 Notion / Confluence
+- 你要 1M+ 条带向量检索的笔记 → 升级到 Quivr / dedicated vector DB(Phase 2 会加)
+
+### 跟"开源向量记忆"那一类(Quivr / privateGPT)比
+
+- 那些是 **RAG pipeline**,你给一堆 PDF,问问题回答。secondbrain 是 **knowledge graph + FTS**,你主动写、主动搜、主动连。
+- 那些要 Docker / GPU / 模型权重。secondbrain 零依赖,纯 stdlib + SQLite。
+- 那些是 **read-only** 的:导入,不再修改。secondbrain 是 **read-write**:agent 能存、能改、能删、能建关系。
+
+> 一句话:**你不是在找一个"更聪明的笔记 App"。你是在找一个你的 AI 真正能"住进去"的地方。**
 
 ---
 
