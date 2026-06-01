@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+*.swp
+
+# Local brain data (each user has their own DB at ~/.secondbrain/)
+brain.db
+brain.db-journal
+brain.db-wal
+brain.db-shm
+*.db
+!scripts/schema.sql
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.iml
+
+# Build artifacts
+build/
+dist/
+*.skill
+# (the .skill zip is a build output; if you want to release it, build it
+# in CI from the source files, not commit it)
