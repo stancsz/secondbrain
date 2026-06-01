@@ -39,6 +39,7 @@ user didn't give — infer sensible ones and state your assumption in one line.
 | "Brain is getting big / 脑子不够用了 / clean up / how big is my brain?" | Run `summary` first. If it recommends action, propose it; don't act unprompted on the data. |
 | "I want to focus on topic X" / "give me a smaller brain for Y" | `distill --query X --output focused.db`. Non-destructive; old brain untouched unless they pass `--activate` to swap. |
 | "Archive old stuff" / "move cold notes out of the way" | `archive --output archive-2026.db` (default: untouched 180d+). Destructive: copies to archive then hard-deletes from working. `merge-brain --from archive-2026.db` brings them back. |
+| "/history" / "show me my past conversations" / "what did we talk about last week?" | List `collection=Conversations` drawers (`list --collection Conversations --sort updated`), pick the one, then `show <id>`. The `/history` slash command in `commands/history.md` automates this. |
 
 ---
 
@@ -62,6 +63,10 @@ command for structured output you can parse; omit it for human-readable text.
 - `distill --output <path> [--tag T] [--collection C] [--query Q] [--since D] [--until D] [--include-related-depth N] [--activate]` — write a filtered working brain to a new file; old brain stays put unless `--activate`
 - `archive --output <path> [--older-than-days N] [--before D] [--tag T] [--collection C] [--dry-run]` — move cold/filtered drawers to a new brain.db, hard-delete from working
 - `merge-brain --from <path>` — bring another brain's drawers into the working brain (idempotent)
+- `add "<title>" --content-file <path> [--collection C] [--tags a,b]` — `add` with content read from a file; used by the auto-capture hook to avoid shell escaping on long transcripts
+
+Slash command (not a CLI subcommand, lives in `commands/history.md`):
+- `/history` — list past conversations, then open the chosen one
 
 ---
 
@@ -108,6 +113,38 @@ the working brain untouched. The user can inspect the new file, then re-run with
 `--activate` to make it the new working brain (which renames the old to `.bak-TIMESTAMP`).
 Always show the user where the new file is, and only suggest `--activate` after they
 confirm.
+
+**Conversations are a first-class collection.** Saved conversation transcripts live
+in `collection=Conversations` and are tagged `auto-capture` (full transcripts from
+the hook) or whatever tag the agent chose when saving manually. Treat them as
+durable notes — search, link, distill, archive them with the same commands. The
+slash command `/history` (in `commands/history.md`) is a shortcut for listing
+and opening these; the agent should also recognize the natural phrases
+"show me past conversations", "what did we talk about last Tuesday" and route
+them through the same flow.
+
+**Proactive capture (the install-and-forget promise).** When the user installs
+this skill, the expectation is that the brain captures everything durable
+automatically. Two channels, both quiet by default:
+
+1. **Hook channel.** The `Stop` hook in `hooks/capture_conversation.py` saves the
+   full conversation transcript on every session end, into
+   `collection=Conversations`. The user opts in by copying
+   `settings.example.json` into their `~/.claude/settings.json` (or
+   `.claude/settings.json`). If the hook isn't wired up, the user gets
+   *manual* capture only and we tell them so once.
+2. **Heuristic channel.** *During* a conversation, you should also save durable
+   bits proactively — but only when the user clearly wants to keep something.
+   Triggers that warrant an `add` (with no confirmation prompt — be quick):
+   - "I want to remember this for later", "save this for me", "for my notes"
+   - Decisions: "let's go with X", "I'm going with X", "from now on X"
+   - Preferences: "I prefer X", "I always X", "I never X"
+   - Personal facts: "I'm working on X", "I live in Y", "my project is Z"
+   - Project context: stack, deadlines, stakeholders, the user dictates anything
+   Don't save: questions, one-off code snippets, the user's transient requests,
+   anything they might revoke in the next message. When in doubt, don't save —
+   the hook already captures the full transcript, so the durable bit can be
+   pulled out later if needed.
 
 **Archive is destructive; merge-brain is its undo.** `archive` *hard-deletes* from the
 working brain after copying the cold drawers out. There is no `--soft` flag. If the user

@@ -45,6 +45,8 @@
 - **图谱遍历。** 基于递归 CTE,从任一节点出发遍历子图。
 - **导入 / 导出。** 支持 JSON、Markdown(兼容 Obsidian)、CSV 三种格式的双向转换。
 - **Distill 与 Archive。** 目标导向的 `distill --query "X"` 写出一个聚焦的工作脑子(原脑子不动,加 `--activate` 才替换);`archive --older-than-days 180` 把长期不碰的笔记搬到冷库,顺手 VACUUM 把工作脑子收小。要找回来用 `merge-brain --from <archive>`。
+- **自动捕获每次对话。** `Stop` hook 会把整段对话全文存到 `collection=Conversations`;对话进行中,agent 也会在用户表现出"想留住"的信号时主动存(`add`)。
+- **`/history` 斜杠命令。** 浏览脑子里存过的对话,挑一条进去看。
 - **Phase 2(规划中)。** 通过 `sqlite-vec` 提供的可选向量检索,以及 MCP server 接口。
 
 ## 安装
@@ -95,6 +97,9 @@ python3 scripts/brain_cli.py archive --output archive-2026.db --older-than-days 
 # 把归档的笔记找回来
 python3 scripts/brain_cli.py merge-brain --from archive-2026.db
 
+# 浏览历史对话(也提供 /history 斜杠命令)
+python3 scripts/brain_cli.py list --collection Conversations --sort updated
+
 # 导出(兼容 Obsidian)
 python3 scripts/brain_cli.py export --format markdown --output brain.md
 ```
@@ -124,6 +129,43 @@ git submodule add https://github.com/stancsz/secondbrain.git .claude/skills/seco
 ```
 
 装好后,agent 会自动识别 "记一下"、"我之前写过 X 吗"、"catch me up on project Y" 这类表达,并从你脑中的笔记里找答案。
+
+### 自动捕获每次对话(可选,但推荐)
+
+要让脑子**自动记住所有对话**,把仓库里的 `settings.example.json` 拷到你的 Claude Code 配置里:
+
+```bash
+# 个人级:所有项目、所有对话都生效
+cp <repo>/settings.example.json ~/.claude/settings.json
+# 然后编辑,把里面的 /path/to/secondbrain 替换成真实路径
+
+# 或项目级:只对当前项目生效
+cp <repo>/settings.example.json .claude/settings.json
+# 然后编辑
+```
+
+这会接入两个 hook,都调用 `hooks/capture_conversation.py`:
+
+- **`Stop`** — 每次对话结束,把整段 transcript 存到 `collection=Conversations`。静默执行、不会让对话失败,并在 `hooks/capture_conversation.log` 写一行供你审计。
+- **`PreCompact`** *(可选)* — 在长会话的上下文压缩前再存一次快照,免得压完就忘。如果觉得太吵,把这块注释掉。
+
+要临时关掉,不删除 hook:
+
+```bash
+SECONDBRAIN_SKIP_CAPTURE=1 claude
+```
+
+### `/history` 斜杠命令
+
+仓库里 `commands/history.md` 是一个斜杠命令,用来浏览历史对话。软链一下就能用:
+
+```bash
+# 个人级
+mkdir -p ~/.claude/commands
+ln -s <repo>/commands/history.md ~/.claude/commands/history.md
+```
+
+之后在任何对话里输入 `/history`,agent 就会列出你 `collection=Conversations` 里的对话,挑一条展示完整内容。你也可以直接说"给我看看最近的 3 次对话",skill 会走同一条路。
 
 ## 与同类工具的对比
 

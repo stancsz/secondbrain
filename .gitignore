@@ -27,3 +27,6 @@ dist/
 *.skill
 # (the .skill zip is a build output; if you want to release it, build it
 # in CI from the source files, not commit it)
+
+# Hook runtime logs
+hooks/*.log

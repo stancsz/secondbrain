@@ -58,7 +58,8 @@ def main():
     p.add_argument("--json", action="store_true", help="machine-readable output")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    a = sub.add_parser("add"); a.add_argument("title"); a.add_argument("content")
+    a = sub.add_parser("add"); a.add_argument("title"); a.add_argument("content", nargs="?")
+    a.add_argument("--content-file", help="read content from this file (avoids shell escaping for long content)")
     a.add_argument("--collection"); a.add_argument("--tags"); a.add_argument("--source", action="append")
 
     s = sub.add_parser("search"); s.add_argument("query")
@@ -136,8 +137,14 @@ def main():
             print(human)
 
     if args.cmd == "add":
+        if args.content_file:
+            content = Path(args.content_file).read_text(encoding="utf-8")
+        else:
+            if args.content is None:
+                sys.exit("❌ add needs either a content argument or --content-file")
+            content = args.content
         tags = [x.strip() for x in (args.tags or "").split(",") if x.strip()]
-        dr = b.add(args.title, args.content, args.collection, tags, args.source or [])
+        dr = b.add(args.title, content, args.collection, tags, args.source or [])
         links = b.related(dr["id"], source="wikilink")
         msg = f"✅ Saved \"{dr['title']}\"  {dr['id'][:8]}"
         if links:
@@ -230,8 +237,7 @@ def main():
     elif args.cmd == "export":
         data = b.export(args.collection, args.format)
         if args.output:
-            from pathlib import Path
-            Path(args.output).write_text(data)
+            Path(args.output).write_text(data, encoding="utf-8")
             print(f"💾 Exported to {args.output}")
         else:
             print(data)

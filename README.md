@@ -45,6 +45,8 @@ Most "AI memory" products store your data in a third-party cloud, behind an API,
 - **Graph traversal.** Recursive CTE-based traverse from any drawer.
 - **Import / export.** Round-trip to JSON, Markdown (Obsidian-compatible), and CSV.
 - **Distill & archive.** Goal-based filter (`distill --query "X"`) writes a focused working brain without touching the old one (pass `--activate` to swap). Cold-storage (`archive --older-than-days 180`) moves untouched drawers out and VACUUMs the working brain. `merge-brain --from <archive>` brings them back.
+- **Auto-capture conversations.** A `Stop` hook writes the full transcript of every conversation into `collection=Conversations`. The agent also proactively saves durable bits during a conversation when the user signals permanence.
+- **`/history` slash command.** Browse past conversations in your brain, then dive into the chosen one.
 - **Phase 2 (planned).** Optional vector search via `sqlite-vec` and an MCP server interface.
 
 ## Installation
@@ -95,6 +97,9 @@ python3 scripts/brain_cli.py archive --output archive-2026.db --older-than-days 
 # Bring archived drawers back
 python3 scripts/brain_cli.py merge-brain --from archive-2026.db
 
+# Browse past conversations (also available as the /history slash command)
+python3 scripts/brain_cli.py list --collection Conversations --sort updated
+
 # Export (Obsidian-compatible)
 python3 scripts/brain_cli.py export --format markdown --output brain.md
 ```
@@ -124,6 +129,43 @@ git submodule add https://github.com/stancsz/secondbrain.git .claude/skills/seco
 ```
 
 Once installed, the agent will catch phrases like "remember this", "what do I know about X", "catch me up on project Y", "记一下", "我之前写过 X 吗", and act on them using your brain.
+
+### Auto-capture every conversation (optional but recommended)
+
+If you want the brain to **remember every conversation automatically**, copy the example hook config into your own Claude Code settings:
+
+```bash
+# Personal scope: every project, every conversation
+cp <repo>/settings.example.json ~/.claude/settings.json
+# then edit the file and replace /path/to/secondbrain with the real path
+
+# Or project scope: just this project
+cp <repo>/settings.example.json .claude/settings.json
+# then edit
+```
+
+This wires up two hooks that call `hooks/capture_conversation.py`:
+
+- **`Stop`** — saves the full transcript of every conversation into `collection=Conversations`. Quiet, never fails the conversation, and writes a one-line entry to `hooks/capture_conversation.log` so you can audit it.
+- **`PreCompact`** *(optional)* — also saves a snapshot before context compaction in long sessions. Comment this out if it feels noisy.
+
+To disable temporarily without removing the hook:
+
+```bash
+SECONDBRAIN_SKIP_CAPTURE=1 claude
+```
+
+### `/history` slash command
+
+The repo ships a slash command at `commands/history.md` that lets you browse past conversations. Wire it up with a symlink:
+
+```bash
+# Personal scope
+mkdir -p ~/.claude/commands
+ln -s <repo>/commands/history.md ~/.claude/commands/history.md
+```
+
+Then in any conversation, type `/history` — the agent lists your `collection=Conversations` drawers and opens the one you pick. You can also just say "show me my last 3 conversations" and the skill handles it the same way.
 
 ## Comparison
 

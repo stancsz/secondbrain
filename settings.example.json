@@ -1,0 +1,33 @@
+{
+  "_comment": "Example settings for wiring the secondbrain auto-capture hook into Claude Code. Copy this to your own ~/.claude/settings.json (personal scope, applies to all projects) or <project>/.claude/settings.json (project scope, committed). Merge with any existing keys; do not just overwrite.",
+
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /path/to/secondbrain/hooks/capture_conversation.py"
+          }
+        ]
+      }
+    ],
+
+    "_Stop_explained": "Fires when the main agent stops (i.e. the conversation ends). Reads the JSON transcript_path from the hook payload, saves it as a Conversations drawer in the brain. Disable by removing this entry or by setting SECONDBRAIN_SKIP_CAPTURE=1 in the shell that launches Claude Code.",
+
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /path/to/secondbrain/hooks/capture_conversation.py"
+          }
+        ]
+      }
+    ],
+
+    "_PreCompact_explained": "Optional: also capture before context compaction in long sessions. Catches the slice of the conversation that would otherwise be lost. Leave this out if you find it noisy (every compaction = a new drawer)."
+  }
+}
