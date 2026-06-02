@@ -13,6 +13,8 @@
 
 > You're not building a second brain. You're renting one. Every few years the rent goes up — the export becomes a Pro feature, the API terms tighten, the company gets acquired or nearly shuts down. You migrate, you lose structure, and the cycle starts again. `secondbrain` bets on the other side: one file, in your home directory, versioned in your git repo. No migration plan, because there's no vendor to migrate from.
 
+> **It is important to own your data and own your knowledge.** Your notes are your intellectual history — the decisions you made, the things you learned, the connections you drew. That record belongs to you, not to a platform. `secondbrain` keeps it that way: a plain file you can read, copy, version, and carry with you forever.
+
 ---
 
 ## What it is
