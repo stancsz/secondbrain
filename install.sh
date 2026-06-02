@@ -5,6 +5,7 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 BRAIN_CLI_PATH="$REPO_DIR/scripts/brain_cli.py"
+CAPTURE_HOOK_PATH="$REPO_DIR/hooks/capture_conversation.py"
 
 echo "🧠 Secondbrain installer"
 echo "   Repo: $REPO_DIR"
@@ -54,7 +55,9 @@ mkdir -p "$SETTINGS_DIR"
 
 echo "🔧 Merging hooks into $SETTINGS_FILE…"
 
-HOOK_CMD="python3 $BRAIN_CLI_PATH"
+# The Stop/PreCompact hooks run the capture script (which reads the
+# transcript and calls the CLI internally) — NOT the CLI directly.
+HOOK_CMD="python3 $CAPTURE_HOOK_PATH"
 
 python3 - <<PYEOF
 import json, sys, os

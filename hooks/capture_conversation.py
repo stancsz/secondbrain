@@ -103,6 +103,29 @@ def _read_transcript(path_str: str) -> str | None:
         return None
 
 
+def _extract_text(value) -> "str | None":
+    """Pull the first usable text out of a message payload, whatever its
+    shape. Claude Code transcripts nest user text as
+    `message.content = [{"type": "text", "text": "..."}]`, but older/other
+    formats use a bare string or a `{"text": "..."}` dict. Handles all of
+    them, recursively, and always returns a string or None — never a list."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        # A message wrapper ({"content": ...}) or a single block ({"text": ...}).
+        if "content" in value:
+            return _extract_text(value["content"])
+        if value.get("type") in (None, "text") and isinstance(value.get("text"), str):
+            return value["text"]
+        return None
+    if isinstance(value, list):
+        for block in value:
+            text = _extract_text(block)
+            if text:
+                return text
+    return None
+
+
 def _derive_title(transcript_text: str, payload: dict) -> str:
     """Build a human-readable title. Falls back to a timestamp + id if
     the transcript doesn't have a clean first-user-message."""
@@ -118,16 +141,7 @@ def _derive_title(transcript_text: str, payload: dict) -> str:
             continue
         if row.get("type") == "user" or row.get("role") == "user":
             msg = row.get("message") or row.get("content")
-            if isinstance(msg, str):
-                first_user_msg = msg
-            elif isinstance(msg, dict):
-                first_user_msg = msg.get("content") or msg.get("text")
-            elif isinstance(msg, list):
-                # Walk the content blocks to find the first text part.
-                for block in msg:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        first_user_msg = block.get("text")
-                        break
+            first_user_msg = _extract_text(msg)
             if first_user_msg:
                 break
 
@@ -188,7 +202,14 @@ def main() -> int:
         # Nothing to save (no transcript or empty); don't log noise.
         return 0
 
-    title = _derive_title(transcript_text, payload)
+    # Title derivation must never crash the hook — fall back to a timestamp.
+    try:
+        title = _derive_title(transcript_text, payload)
+    except Exception as ex:  # noqa: BLE001 — the hook must not fail the session
+        _log(f"title derivation failed, using fallback: {ex!r}")
+        sid = payload.get("session_id", "") or ""
+        title = f"Conversation {datetime.now().strftime('%Y-%m-%d %H:%M')} ({sid[:8] or 'unknown'})"
+
     ok, err = _add_to_brain(title, transcript_text)
     if ok:
         _log(f"captured: {title!r}  ({len(transcript_text)} chars)")
@@ -198,4 +219,10 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # Last line of defense: whatever happens, the Stop hook exits 0 so the
+    # conversation always ends cleanly (the module contract).
+    try:
+        sys.exit(main())
+    except Exception as ex:  # noqa: BLE001
+        _log(f"unhandled error, exiting 0 anyway: {ex!r}")
+        sys.exit(0)
