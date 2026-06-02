@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Tests for the conversation-capture hook.
 
-The hook is the headline Claude Code integration ("auto-capture every
-conversation"), so its title derivation must handle every transcript shape
-Claude Code emits — and it must NEVER raise, per the module contract.
+New model: logs stay as logs (plain files under ~/.secondbrain/logs/), the
+brain stays clean, and on Stop the hook asks the agent to distill durable
+knowledge into clean drawers. The hook must never raise and never wedge a
+session (always exits 0).
 """
 import json
 import os
@@ -19,6 +20,11 @@ import capture_conversation as cap  # noqa: E402
 
 HOOK = HOOKS_DIR / "capture_conversation.py"
 
+REAL_TRANSCRIPT = json.dumps({
+    "type": "user",
+    "message": {"role": "user", "content": [{"type": "text", "text": "design a cache"}]},
+}) + "\n"
+
 
 class TestExtractText(unittest.TestCase):
     """_extract_text must always return a str or None — never a list."""
@@ -27,7 +33,6 @@ class TestExtractText(unittest.TestCase):
         self.assertEqual(cap._extract_text("hello"), "hello")
 
     def test_content_block_list(self):
-        # The real Claude Code format: message.content is a list of blocks.
         msg = {"role": "user", "content": [{"type": "text", "text": "design a cache"}]}
         self.assertEqual(cap._extract_text(msg), "design a cache")
 
@@ -42,72 +47,137 @@ class TestExtractText(unittest.TestCase):
         self.assertEqual(cap._extract_text(msg), "second")
 
     def test_never_returns_list(self):
-        result = cap._extract_text([{"type": "text", "text": "x"}])
-        self.assertNotIsInstance(result, list)
+        self.assertNotIsInstance(cap._extract_text([{"type": "text", "text": "x"}]), list)
 
     def test_empty_returns_none(self):
         self.assertIsNone(cap._extract_text([]))
         self.assertIsNone(cap._extract_text({}))
 
 
-class TestDeriveTitle(unittest.TestCase):
-    def test_title_from_content_block_format(self):
-        transcript = json.dumps({
-            "type": "user",
-            "message": {"role": "user", "content": [{"type": "text", "text": "Help me design a cache"}]},
-        })
-        title = cap._derive_title(transcript, {"session_id": "abc"})
-        self.assertIn("Help me design a cache", title)
-
-    def test_fallback_when_no_user_message(self):
-        transcript = json.dumps({"type": "assistant", "message": {"content": "hi"}})
-        title = cap._derive_title(transcript, {"session_id": "abcdef12345"})
-        self.assertIn("abcdef12", title)  # session-id fallback
-
-
-class TestHookNeverFails(unittest.TestCase):
-    """The hook process must exit 0 on every input — the module contract."""
-
-    def _run(self, stdin_text, env_extra=None):
-        env = dict(os.environ)
-        if env_extra:
-            env.update(env_extra)
-        proc = subprocess.run(
-            [sys.executable, str(HOOK)],
-            input=stdin_text, capture_output=True, text=True, env=env,
-        )
-        return proc
-
-    def test_empty_stdin_exits_zero(self):
-        self.assertEqual(self._run("").returncode, 0)
-
-    def test_garbage_stdin_exits_zero(self):
-        self.assertEqual(self._run("not json {{{").returncode, 0)
-
-    def test_missing_transcript_exits_zero(self):
-        self.assertEqual(self._run('{"session_id":"x"}').returncode, 0)
-
-    def test_real_format_captures_and_exits_zero(self):
+class TestWriteLog(unittest.TestCase):
+    def test_writes_plain_file_under_logs_dir(self):
         with tempfile.TemporaryDirectory() as td:
-            transcript = Path(td) / "t.jsonl"
-            transcript.write_text(json.dumps({
-                "type": "user",
-                "message": {"role": "user", "content": [{"type": "text", "text": "cache design"}]},
-            }) + "\n")
-            db = Path(td) / "brain.db"
-            payload = json.dumps({"session_id": "s1", "transcript_path": str(transcript)})
-            proc = self._run(payload, {"SECONDBRAIN_DB": str(db)})
-            self.assertEqual(proc.returncode, 0)
-            # Verify it actually landed in the Conversations collection.
-            cli = HOOKS_DIR.parent / "scripts" / "brain_cli.py"
-            out = subprocess.run(
-                [sys.executable, str(cli), "--db", str(db), "--json",
-                 "list", "--collection", "Conversations"],
-                capture_output=True, text=True,
+            os.environ["SECONDBRAIN_LOGS_DIR"] = td
+            try:
+                path = cap._write_log(REAL_TRANSCRIPT, {"session_id": "abc12345"})
+            finally:
+                del os.environ["SECONDBRAIN_LOGS_DIR"]
+            self.assertIsNotNone(path)
+            self.assertTrue(path.exists())
+            self.assertEqual(path.read_text(), REAL_TRANSCRIPT)
+            # Nested under year/month and named by date + session id.
+            self.assertIn("abc12345", path.name)
+            self.assertTrue(str(path).startswith(td))
+
+    def test_idempotent_across_double_stop(self):
+        # Same session on the same day must reuse one file, not duplicate.
+        with tempfile.TemporaryDirectory() as td:
+            os.environ["SECONDBRAIN_LOGS_DIR"] = td
+            try:
+                p1 = cap._write_log(REAL_TRANSCRIPT, {"session_id": "sess0001"})
+                p2 = cap._write_log(REAL_TRANSCRIPT + "more\n", {"session_id": "sess0001"})
+            finally:
+                del os.environ["SECONDBRAIN_LOGS_DIR"]
+            self.assertEqual(p1, p2)
+            files = list(Path(td).rglob("*.jsonl"))
+            self.assertEqual(len(files), 1)
+
+
+class TestDistillReason(unittest.TestCase):
+    def test_reason_mentions_clean_drawers_not_transcript(self):
+        reason = cap._distill_reason(Path("/tmp/logs/x.jsonl"))
+        self.assertIn("distill", reason.lower())
+        self.assertIn("never the raw transcript", reason.lower())
+        self.assertIn("/tmp/logs/x.jsonl", reason)
+        self.assertIn("add", reason)
+
+
+class TestHookProcess(unittest.TestCase):
+    """Subprocess-level behavior — the contract Claude Code actually sees."""
+
+    def _run(self, payload_obj, env_extra=None, transcript=REAL_TRANSCRIPT):
+        env = dict(os.environ)
+        with tempfile.TemporaryDirectory() as td:
+            logs = Path(td) / "logs"
+            tpath = Path(td) / "t.jsonl"
+            tpath.write_text(transcript)
+            payload = dict(payload_obj)
+            payload.setdefault("transcript_path", str(tpath))
+            env["SECONDBRAIN_LOGS_DIR"] = str(logs)
+            if env_extra:
+                env.update(env_extra)
+            proc = subprocess.run(
+                [sys.executable, str(HOOK)],
+                input=json.dumps(payload), capture_output=True, text=True, env=env,
             )
-            drawers = json.loads(out.stdout)
-            self.assertEqual(len(drawers), 1)
-            self.assertIn("cache design", drawers[0]["title"])
+            log_files = list(logs.rglob("*.jsonl")) if logs.exists() else []
+            return proc, log_files
+
+    def test_stop_writes_log_and_blocks_to_distill(self):
+        proc, logs = self._run({"hook_event_name": "Stop", "session_id": "s1"})
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(len(logs), 1)  # log written
+        out = json.loads(proc.stdout)   # block decision emitted
+        self.assertEqual(out["decision"], "block")
+        self.assertIn("distill", out["reason"].lower())
+
+    def test_stop_hook_active_does_not_block_again(self):
+        # The second stop (after distillation) must be allowed through.
+        proc, logs = self._run(
+            {"hook_event_name": "Stop", "session_id": "s1", "stop_hook_active": True}
+        )
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(len(logs), 1)          # still logs
+        self.assertEqual(proc.stdout.strip(), "")  # but no block
+
+    def test_precompact_logs_but_never_blocks(self):
+        proc, logs = self._run({"hook_event_name": "PreCompact", "session_id": "s2"})
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(proc.stdout.strip(), "")
+
+    def test_skip_distill_logs_only(self):
+        proc, logs = self._run(
+            {"hook_event_name": "Stop", "session_id": "s3"},
+            {"SECONDBRAIN_SKIP_DISTILL": "1"},
+        )
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(proc.stdout.strip(), "")
+
+    def test_skip_capture_does_nothing(self):
+        proc, logs = self._run(
+            {"hook_event_name": "Stop", "session_id": "s4"},
+            {"SECONDBRAIN_SKIP_CAPTURE": "1"},
+        )
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(len(logs), 0)
+        self.assertEqual(proc.stdout.strip(), "")
+
+    def test_never_writes_to_brain_db(self):
+        # The brain must stay clean: no brain.db should be created by capture.
+        with tempfile.TemporaryDirectory() as td:
+            env = dict(os.environ)
+            logs = Path(td) / "logs"
+            db = Path(td) / "brain.db"
+            tpath = Path(td) / "t.jsonl"
+            tpath.write_text(REAL_TRANSCRIPT)
+            env["SECONDBRAIN_LOGS_DIR"] = str(logs)
+            env["SECONDBRAIN_DB"] = str(db)
+            subprocess.run(
+                [sys.executable, str(HOOK)],
+                input=json.dumps({"hook_event_name": "Stop", "session_id": "s5",
+                                  "transcript_path": str(tpath)}),
+                capture_output=True, text=True, env=env,
+            )
+            self.assertFalse(db.exists(), "capture hook must not create brain.db")
+
+    def test_exits_zero_on_garbage(self):
+        env = dict(os.environ)
+        for bad in ("", "}{not json", '{"hook_event_name":"Stop"}'):
+            proc = subprocess.run([sys.executable, str(HOOK)],
+                                  input=bad, capture_output=True, text=True, env=env)
+            self.assertEqual(proc.returncode, 0)
 
 
 if __name__ == "__main__":

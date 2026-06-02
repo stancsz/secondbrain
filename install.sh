@@ -6,6 +6,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 BRAIN_CLI_PATH="$REPO_DIR/scripts/brain_cli.py"
 CAPTURE_HOOK_PATH="$REPO_DIR/hooks/capture_conversation.py"
+RECALL_HOOK_PATH="$REPO_DIR/hooks/recall_memories.py"
 
 echo "🧠 Secondbrain installer"
 echo "   Repo: $REPO_DIR"
@@ -55,72 +56,58 @@ mkdir -p "$SETTINGS_DIR"
 
 echo "🔧 Merging hooks into $SETTINGS_FILE…"
 
-# The Stop/PreCompact hooks run the capture script (which reads the
-# transcript and calls the CLI internally) — NOT the CLI directly.
-HOOK_CMD="python3 $CAPTURE_HOOK_PATH"
+# Stop/PreCompact run the capture script; UserPromptSubmit runs the recall
+# script. Both read the hook payload on stdin — neither is the CLI directly.
+CAPTURE_CMD="python3 $CAPTURE_HOOK_PATH"
+RECALL_CMD="python3 $RECALL_HOOK_PATH"
 
 python3 - <<PYEOF
-import json, sys, os
+import json, os
 
 settings_file = """$SETTINGS_FILE"""
-hook_cmd = """$HOOK_CMD"""
+capture_cmd = """$CAPTURE_CMD"""
+recall_cmd = """$RECALL_CMD"""
 
-# Read existing settings (tolerate missing file or invalid JSON)
+# Mode 1 capture: Stop + PreCompact. Mode 2 recall: UserPromptSubmit.
+wanted = [
+    ("Stop", capture_cmd),
+    ("PreCompact", capture_cmd),
+    ("UserPromptSubmit", recall_cmd),
+]
+
+# Read existing settings (tolerate missing file or invalid JSON).
+settings = {}
 if os.path.exists(settings_file):
     try:
         with open(settings_file, "r") as f:
             settings = json.load(f)
     except (json.JSONDecodeError, ValueError):
         print("⚠️  Existing settings.json is invalid JSON — starting fresh.")
-        settings = {}
-else:
-    settings = {}
-
 if not isinstance(settings, dict):
     settings = {}
 
 hooks = settings.setdefault("hooks", {})
 
-installed_stop = False
-installed_precompact = False
+def already_present(event, cmd):
+    return any(
+        h.get("command") == cmd
+        for entry in hooks.get(event, [])
+        for h in (entry.get("hooks") or [])
+    )
 
-def hook_entry(cmd):
-    return {"matcher": "", "hooks": [{"type": "command", "command": cmd}]}
-
-# ── Stop hook ──
-stop_list = hooks.setdefault("Stop", [])
-already_stop = any(
-    h.get("command") == hook_cmd
-    for entry in stop_list
-    for h in (entry.get("hooks") or [])
-)
-if already_stop:
-    print("ℹ️  Stop hook already installed, skipping.")
-else:
-    stop_list.append(hook_entry(hook_cmd))
-    installed_stop = True
-
-# ── PreCompact hook ──
-precompact_list = hooks.setdefault("PreCompact", [])
-already_precompact = any(
-    h.get("command") == hook_cmd
-    for entry in precompact_list
-    for h in (entry.get("hooks") or [])
-)
-if already_precompact:
-    print("ℹ️  PreCompact hook already installed, skipping.")
-else:
-    precompact_list.append(hook_entry(hook_cmd))
-    installed_precompact = True
+for event, cmd in wanted:
+    event_list = hooks.setdefault(event, [])
+    if already_present(event, cmd):
+        print(f"ℹ️  {event} hook already installed, skipping.")
+    else:
+        event_list.append(
+            {"matcher": "*", "hooks": [{"type": "command", "command": cmd}]}
+        )
+        print(f"✅ {event} hook added.")
 
 with open(settings_file, "w") as f:
     json.dump(settings, f, indent=2)
     f.write("\n")
-
-if installed_stop:
-    print("✅ Stop hook added.")
-if installed_precompact:
-    print("✅ PreCompact hook added.")
 PYEOF
 
 # ── 4. Symlink commands/history.md ───────────────────────────────────────────

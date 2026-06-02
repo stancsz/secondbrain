@@ -47,7 +47,8 @@ Most "AI memory" products store your data in a third-party cloud, behind an API,
 - **Graph traversal.** Recursive CTE-based traverse from any drawer.
 - **Import / export.** Round-trip to JSON, Markdown (Obsidian-compatible), and CSV.
 - **Distill & archive.** Goal-based filter (`distill --query "X"`) writes a focused working brain without touching the old one (pass `--activate` to swap). Cold-storage (`archive --older-than-days 180`) moves untouched drawers out and VACUUMs the working brain. `merge-brain --from <archive>` brings them back.
-- **Auto-capture conversations.** A `Stop` hook writes the full transcript of every conversation into `collection=Conversations`. The agent also proactively saves durable bits during a conversation when the user signals permanence.
+- **Logs stay logs; the brain stays clean.** A `Stop` hook archives the full raw transcript of every session to plain files under `~/.secondbrain/logs/` — never into the brain. The brain (`brain.db`) holds only *distilled* know-how: titled drawers the agent extracts at session end (decisions, preferences, facts, reusable knowledge), plus anything you explicitly save. Searching your knowledge never returns a wall of raw chat.
+- **Proactive recall.** A `UserPromptSubmit` hook searches the clean brain against each prompt and injects relevant notes into the agent's context *before* it answers — so you don't have to ask "what do I know about X".
 - **`/history` slash command.** Browse past conversations in your brain, then dive into the chosen one.
 - **Phase 2 (planned).** Optional vector search via `sqlite-vec` and an MCP server interface.
 
@@ -101,8 +102,8 @@ python3 scripts/brain_cli.py archive --output archive-2026.db --older-than-days 
 # Bring archived drawers back
 python3 scripts/brain_cli.py merge-brain --from archive-2026.db
 
-# Browse past conversations (also available as the /history slash command)
-python3 scripts/brain_cli.py list --collection Conversations --sort updated
+# Browse past conversation logs (also available as the /history slash command)
+ls -1t ~/.secondbrain/logs/*/*/*.jsonl 2>/dev/null | head
 
 # Export an Obsidian-compatible vault (one .md file per note, into a directory)
 python3 scripts/brain_cli.py export --format markdown --output ./brain-vault
@@ -188,30 +189,56 @@ git submodule add https://github.com/stancsz/secondbrain.git .claude/skills/seco
 
 Once installed, the agent will catch phrases like "remember this", "what do I know about X", "catch me up on project Y", "记一下", "我之前写过 X 吗", and act on them using your brain.
 
-### Auto-capture every conversation (optional but recommended)
+### Auto-capture & auto-distill (optional but recommended)
 
-If you want the brain to **remember every conversation automatically**, the easiest path is `install.sh`, which merges the hooks into your existing settings (no overwrite) and substitutes the real path for you:
+The design splits cleanly in two: **logs stay logs, the brain stays clean.**
+
+- **Raw transcripts → log files.** Every session is archived to
+  `~/.secondbrain/logs/YYYY/MM/` as plain JSONL. These are *logs* — browse them
+  with `/history`, `grep` them, delete them, git-ignore them. They never touch
+  the brain.
+- **Know-how → the brain.** At session end the hook asks the agent to extract
+  the durable bits (decisions, preferences, facts, reusable knowledge) into
+  clean, titled drawers. The brain accumulates distilled knowledge, not bulk
+  chat — so `search` and proactive recall stay sharp.
+
+The easiest way to wire it up is `install.sh`, which merges the hooks into your
+existing settings (no overwrite) and substitutes the real path:
 
 ```bash
 bash <repo>/install.sh
 ```
 
-To wire it up by hand instead, merge the entries from `settings.example.json` into your own `~/.claude/settings.json` (personal) or `.claude/settings.json` (project). Don't `cp` it over an existing file — that would discard your other settings. Replace `/path/to/secondbrain` with the real repo path.
+To wire it up by hand instead, merge the entries from `settings.example.json`
+into your own `~/.claude/settings.json` (personal) or `.claude/settings.json`
+(project). Don't `cp` it over an existing file — that would discard your other
+settings. Replace `/path/to/secondbrain` with the real repo path.
 
-Either way, this wires up two hooks that call `hooks/capture_conversation.py`:
+This wires up three hooks:
 
-- **`Stop`** — saves the full transcript of every conversation into `collection=Conversations`. Quiet, never fails the conversation, and writes a one-line entry to `hooks/capture_conversation.log` so you can audit it.
-- **`PreCompact`** *(optional)* — also saves a snapshot before context compaction in long sessions. Comment this out if it feels noisy.
+- **`Stop`** (`hooks/capture_conversation.py`) — logs the transcript to disk,
+  then nudges the agent once to distill durable know-how into the brain. Quiet,
+  never wedges the session, and audits to `hooks/capture_conversation.log`.
+- **`PreCompact`** *(optional)* — snapshots the log before context compaction in
+  long sessions. Never distills. Comment out if noisy.
+- **`UserPromptSubmit`** (`hooks/recall_memories.py`) — proactive recall: searches
+  the clean brain against each prompt and injects relevant notes into context.
 
-To disable temporarily without removing the hook:
+Env switches: `SECONDBRAIN_SKIP_CAPTURE=1` (disable the capture hook),
+`SECONDBRAIN_SKIP_DISTILL=1` (log only, no distill nudge),
+`SECONDBRAIN_SKIP_RECALL=1` (disable proactive recall),
+`SECONDBRAIN_LOGS_DIR=/path` (move the log directory).
 
 ```bash
-SECONDBRAIN_SKIP_CAPTURE=1 claude
+# disable everything for one session
+SECONDBRAIN_SKIP_CAPTURE=1 SECONDBRAIN_SKIP_RECALL=1 claude
 ```
 
 ### `/history` slash command
 
-The repo ships a slash command at `commands/history.md` that lets you browse past conversations. Wire it up with a symlink:
+The repo ships a slash command at `commands/history.md` that browses your
+conversation **logs** (the files under `~/.secondbrain/logs/`, not the brain).
+Wire it up with a symlink (`install.sh` does this for you):
 
 ```bash
 # Personal scope
@@ -219,7 +246,9 @@ mkdir -p ~/.claude/commands
 ln -s <repo>/commands/history.md ~/.claude/commands/history.md
 ```
 
-Then in any conversation, type `/history` — the agent lists your `collection=Conversations` drawers and opens the one you pick. You can also just say "show me my last 3 conversations" and the skill handles it the same way.
+Then type `/history` — the agent lists your recent session logs and opens the one
+you pick, rendered readably. You can also say "show me my last 3 conversations".
+From there it can **distill** a log into the brain on request.
 
 ## Comparison
 
