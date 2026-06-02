@@ -45,8 +45,9 @@
 - **图谱遍历。** 基于递归 CTE,从任一节点出发遍历子图。
 - **导入 / 导出。** 支持 JSON、Markdown(兼容 Obsidian)、CSV 三种格式的双向转换。
 - **Distill 与 Archive。** 目标导向的 `distill --query "X"` 写出一个聚焦的工作脑子(原脑子不动,加 `--activate` 才替换);`archive --older-than-days 180` 把长期不碰的笔记搬到冷库,顺手 VACUUM 把工作脑子收小。要找回来用 `merge-brain --from <archive>`。
-- **自动捕获每次对话。** `Stop` hook 会把整段对话全文存到 `collection=Conversations`;对话进行中,agent 也会在用户表现出"想留住"的信号时主动存(`add`)。
-- **`/history` 斜杠命令。** 浏览脑子里存过的对话,挑一条进去看。
+- **日志归日志,脑子保持干净。** `Stop` hook 把每次会话的完整原始 transcript 存成 `~/.secondbrain/logs/` 下的纯文件——绝不写进脑子。脑子(`brain.db`)只放*提炼后*的 know-how:会话结束时 agent 抽取出来的决策、偏好、事实、可复用知识,以及你显式保存的内容。检索知识时不会再翻出一大堆原始聊天记录。
+- **主动回忆。** `UserPromptSubmit` hook 会拿你每条 prompt 去检索干净的脑子,在 agent 回答*之前*把相关笔记注入上下文——你不用主动问"我对 X 知道些什么"。
+- **`/history` 斜杠命令。** 浏览磁盘上的对话日志,挑一条进去看。
 - **Phase 2(规划中)。** 通过 `sqlite-vec` 提供的可选向量检索,以及 MCP server 接口。
 
 ## 安装
@@ -97,8 +98,8 @@ python3 scripts/brain_cli.py archive --output archive-2026.db --older-than-days 
 # 把归档的笔记找回来
 python3 scripts/brain_cli.py merge-brain --from archive-2026.db
 
-# 浏览历史对话(也提供 /history 斜杠命令)
-python3 scripts/brain_cli.py list --collection Conversations --sort updated
+# 浏览历史对话日志(也提供 /history 斜杠命令)
+ls -1t ~/.secondbrain/logs/*/*/*.jsonl 2>/dev/null | head
 
 # 导出(兼容 Obsidian)
 python3 scripts/brain_cli.py export --format markdown --output brain.md
@@ -144,10 +145,13 @@ cp <repo>/settings.example.json .claude/settings.json
 # 然后编辑
 ```
 
-这会接入两个 hook,都调用 `hooks/capture_conversation.py`:
+设计原则就一句:**日志归日志,脑子保持干净。** 原始 transcript 进 `~/.secondbrain/logs/` 纯文件;提炼出的 know-how 进脑子。这会接入三个 hook:
 
-- **`Stop`** — 每次对话结束,把整段 transcript 存到 `collection=Conversations`。静默执行、不会让对话失败,并在 `hooks/capture_conversation.log` 写一行供你审计。
-- **`PreCompact`** *(可选)* — 在长会话的上下文压缩前再存一次快照,免得压完就忘。如果觉得太吵,把这块注释掉。
+- **`Stop`**(`hooks/capture_conversation.py`)— 把 transcript 存到磁盘日志,然后提示 agent 一次,把这次对话里值得留下的决策/偏好/事实提炼成干净的 drawer 存进脑子(不是原始 transcript)。静默、不会卡住会话,审计写在 `hooks/capture_conversation.log`。
+- **`PreCompact`** *(可选)* — 长会话上下文压缩前快照一份日志,不做提炼。觉得吵就注释掉。
+- **`UserPromptSubmit`**(`hooks/recall_memories.py`)— 主动回忆:拿每条 prompt 检索干净的脑子,把相关笔记注入上下文。
+
+环境开关:`SECONDBRAIN_SKIP_CAPTURE=1`(关捕获)、`SECONDBRAIN_SKIP_DISTILL=1`(只记日志、不提示提炼)、`SECONDBRAIN_SKIP_RECALL=1`(关主动回忆)、`SECONDBRAIN_LOGS_DIR=/path`(改日志目录)。
 
 要临时关掉,不删除 hook:
 
@@ -157,7 +161,7 @@ SECONDBRAIN_SKIP_CAPTURE=1 claude
 
 ### `/history` 斜杠命令
 
-仓库里 `commands/history.md` 是一个斜杠命令,用来浏览历史对话。软链一下就能用:
+仓库里 `commands/history.md` 是一个斜杠命令,用来浏览磁盘上的对话**日志**(`~/.secondbrain/logs/` 里的文件,不是脑子)。软链一下就能用(`install.sh` 会替你做):
 
 ```bash
 # 个人级
@@ -165,7 +169,7 @@ mkdir -p ~/.claude/commands
 ln -s <repo>/commands/history.md ~/.claude/commands/history.md
 ```
 
-之后在任何对话里输入 `/history`,agent 就会列出你 `collection=Conversations` 里的对话,挑一条展示完整内容。你也可以直接说"给我看看最近的 3 次对话",skill 会走同一条路。
+之后输入 `/history`,agent 就会列出最近的会话日志,挑一条可读地展示出来。你也可以直接说"给我看看最近的 3 次对话"。从那里还能按需把某条日志**提炼**进脑子。
 
 ## 与同类工具的对比
 

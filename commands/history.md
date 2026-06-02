@@ -1,75 +1,57 @@
 ---
-description: Browse past conversations saved in your secondbrain. Lists Conversations-collection drawers, then dives into the chosen one.
+description: Browse past conversation logs saved by secondbrain. Lists raw transcript log files under ~/.secondbrain/logs/, then opens the one you pick in a readable form.
 ---
 
 # /history
 
-Show the user a list of their saved conversations, then open the one they
-pick. This is a slash command — the body below is the prompt Claude Code
+Show the user a list of their saved conversation **logs**, then open the one
+they pick. This is a slash command — the body below is the prompt Claude Code
 sees when the user types `/history`.
+
+> Conversation logs are plain files, not brain drawers. The brain (`brain.db`)
+> holds only distilled knowledge; the full raw transcripts live on disk under
+> `~/.secondbrain/logs/YYYY/MM/`. This command browses those files.
 
 ## Behavior
 
-1. **List recent conversations.** Run:
+1. **List recent logs.** The logs live under `~/.secondbrain/logs/` (override:
+   `$SECONDBRAIN_LOGS_DIR`), nested by year/month, named
+   `YYYY-MM-DD__<session8>.jsonl`. List the most recent ~30, newest first:
 
    ```bash
-   python3 <repo>/scripts/brain_cli.py list --collection Conversations --sort updated --limit 30
+   ls -1t "${SECONDBRAIN_LOGS_DIR:-$HOME/.secondbrain/logs}"/*/*/*.jsonl 2>/dev/null | head -30
    ```
 
-   If the result is empty, tell the user: "No saved conversations yet.
-   If you wired up the auto-capture hook in `settings.json`, every
-   conversation will be saved automatically. Otherwise say
-   `/save-conversation` or ask me to save this one."
+   If there are none, tell the user: "No conversation logs yet. If you wired up
+   the capture hook in `settings.json`, every session is logged automatically
+   under `~/.secondbrain/logs/`. Otherwise this session isn't being recorded."
 
-2. **Present the list.** For each drawer, show:
+2. **Present the list.** For each log file, show:
    - Index (1-based)
-   - Title (which is the date+time the conversation was saved)
-   - Collection badge (`[Conversations]`)
-   - Tags (e.g. `auto-capture`, topic tags)
-   - Short id (8 chars)
+   - The date (from the filename)
+   - A one-line topic, derived by reading the first user message in the file
+     (parse the JSONL; the first `type:"user"` row's text)
+   - The filename (so the user can pick by it)
 
-   Use the standard `list` formatting.
+3. **Ask the user to pick.** "Reply with a number, a filename, or `q` to cancel."
 
-3. **Ask the user to pick.** "Reply with a number, a short id, or
-   `q` to cancel."
+4. **Open the chosen log.** Read the file and present a readable timeline of
+   user messages and assistant responses with timestamps. Do **not** dump the
+   raw JSONL at the user.
 
-4. **Open the chosen conversation.** Run:
-
-   ```bash
-   python3 <repo>/scripts/brain_cli.py show <id>
-   ```
-
-   If the content is a raw transcript (JSONL from Claude Code's hook),
-   parse it on the fly and present a readable form: a timeline of
-   user messages and assistant responses, with timestamps. Don't dump
-   the raw JSONL at the user.
-
-5. **Offer follow-ups.** After showing the conversation, ask if they
-   want to:
-   - Search across all conversations (`brain search ... --collection Conversations`)
-   - Summarize a slice
-   - Distill it into a focused drawer (via `brain distill`)
-   - Archive it (via `brain archive --collection Conversations`)
-
-## Path resolution
-
-`<repo>` is the absolute path to this secondbrain repo. Resolve it
-from the slash command file's location:
-
-```
-<skill_root>/commands/history.md  →  <skill_root>/scripts/brain_cli.py
-```
-
-If you can't resolve it, ask the user where they installed the skill.
+5. **Offer follow-ups.** After showing the conversation, ask if they want to:
+   - **Distill it into the brain** — extract durable decisions/facts/preferences
+     as clean drawers with `brain add ...` (the same thing the Stop hook asks
+     for automatically; useful if distillation was skipped or you want more).
+   - Search across logs (`grep -l "<term>" ~/.secondbrain/logs/*/*/*.jsonl`).
+   - Summarize a slice.
 
 ## Notes
 
-- This command does **not** require the auto-capture hook to be wired up.
-  If conversations exist (e.g. the user saved some manually), the command
-  will find them. If none exist, fall back to the helpful-empty-state
-  message above.
-- The user can also type natural phrases like "show me my last 3
-  conversations" or "what did we talk about last Tuesday?" and the
-  secondbrain skill should handle those via `search` + filter on
-  `collection=Conversations`. Treat this slash command as a shortcut
-  for that flow.
+- The brain and the logs are deliberately separate. Searching your **knowledge**
+  ("what do I know about X") goes through `brain search` and never touches these
+  raw logs. Browsing **what was said in a past session** is what `/history` is for.
+- Natural phrases like "show me my last 3 conversations" or "what did we talk
+  about last Tuesday?" should route through this same log-browsing flow.
+- Distillation is how knowledge gets from a log into the brain — either the
+  automatic Stop-hook nudge, or you doing it explicitly from here.

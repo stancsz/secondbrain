@@ -22,6 +22,18 @@
           }
         ]
       }
+    ],
+
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /path/to/secondbrain/hooks/recall_memories.py"
+          }
+        ]
+      }
     ]
   }
 }
