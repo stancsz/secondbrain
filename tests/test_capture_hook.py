@@ -190,6 +190,27 @@ class TestDistillReason(unittest.TestCase):
         # a second `prev:` substring is a strong-enough signal here.
         self.assertEqual(reason.count("prev:"), 1)
 
+    def test_reason_names_all_four_taxonomy_collections(self):
+        reason = cap._distill_reason(None)
+        for collection in ("Decisions", "Preferences", "Facts", "Knowledge"):
+            self.assertIn(collection, reason,
+                          f"--collection {collection} must appear in the distill instruction")
+
+    def test_reason_instructs_collection_flag(self):
+        reason = cap._distill_reason(None)
+        self.assertIn("--collection", reason)
+
+    def test_reason_without_log_path_omits_log_line(self):
+        reason = cap._distill_reason(None)
+        self.assertNotIn("already saved as a log", reason)
+
+    def test_reason_with_log_path_includes_path(self):
+        # Use a relative path so it stays platform-neutral. Path("/abs/...")
+        # gets mangled to backslashes on Windows, breaking the substring check.
+        log_path = Path("logs/2026-06-02__abc.jsonl")
+        reason = cap._distill_reason(log_path)
+        self.assertIn(str(log_path), reason)
+
 
 class TestHookProcess(unittest.TestCase):
     """Subprocess-level behavior — the contract Claude Code actually sees."""
@@ -282,6 +303,18 @@ class TestHookProcess(unittest.TestCase):
             proc = subprocess.run([sys.executable, str(HOOK)],
                                   input=bad, capture_output=True, text=True, env=env)
             self.assertEqual(proc.returncode, 0)
+
+    def test_stop_block_reason_contains_all_four_taxonomy_collections(self):
+        # Smart trigger requires a substantive transcript to emit the block.
+        proc, _ = self._run(
+            {"hook_event_name": "Stop", "session_id": "taxtest"},
+            transcript=LONG_TRANSCRIPT_WITH_MARKERS,
+        )
+        self.assertEqual(proc.returncode, 0)
+        reason = json.loads(proc.stdout)["reason"]
+        for collection in ("Decisions", "Preferences", "Facts", "Knowledge"):
+            self.assertIn(collection, reason,
+                          f"block reason must name the '{collection}' taxonomy collection")
 
 
 class TestSmartTrigger(unittest.TestCase):

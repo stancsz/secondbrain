@@ -30,6 +30,7 @@ user didn't give — infer sensible ones and state your assumption in one line.
 | "Catch me up on project Z" / "prep me on Z" | `list --collection Z --sort updated`, read top drawers, give a short brief, surface the most-linked ones. |
 | "What am I missing on X?" | `search X`, list what exists, compare against their outline/goal, name the gaps. |
 | "What haven't I touched in a while?" | `list --sort updated` (oldest end) or query the DB directly by `updated_at`. |
+| "What decisions have I saved?" / "What are my preferences?" | `list --collection Decisions` / `list --collection Preferences` / `list --collection Facts` / `list --collection Knowledge` — the four taxonomy collections for distilled know-how. |
 | Pastes many items (abstracts, links, snippets) | One `add` per item. Auto-title, auto-tag. Cross-link overlapping ones by inserting `[[wikilinks]]` into content (see Bulk capture). |
 | "Link these two notes" / "these contradict" | `relate <from> <to> --type <references\|contradicts\|expands\|related>`. |
 | "Show me note N" / "open the RAG note" | `show <id-or-title>`. |
@@ -129,6 +130,17 @@ the working brain untouched. The user can inspect the new file, then re-run with
 Always show the user where the new file is, and only suggest `--activate` after they
 confirm.
 
+**Knowledge taxonomy.** When saving distilled knowledge from a conversation (via the distill channel or heuristic saves), always set `--collection` to one of these four:
+
+| Collection | What goes here | Examples |
+|---|---|---|
+| `Decisions` | Concrete choices made | "Using Postgres for the project", "Chose MUI over Tailwind" |
+| `Preferences` | Lasting style / approach | "Always TypeScript strict mode", "Prefer tabs over spaces" |
+| `Facts` | Persistent personal/project context | "Stack: Next.js + FastAPI", "Deadline: Q3 2026", "Team lead: Alice" |
+| `Knowledge` | Reusable how-to, patterns, lessons | "How to deploy to staging", "Django N+1 pattern to avoid" |
+
+Notes saved mid-session for a specific topic (a paper abstract, a design doc) may use a topic collection (`Research`, `Work`, etc.) instead — the four above are specifically for auto-distilled conversational know-how. The `(none)` bucket in `stats` is a backlog of uncategorized drawers; any drawer is still fully searchable without a collection.
+
 **Logs are logs; the brain is clean.** Raw conversation transcripts are **not**
 stored in the brain. They are archived as plain files under `~/.secondbrain/logs/`
 by the capture hook. `brain.db` holds only *distilled* knowledge — titled drawers
@@ -148,19 +160,19 @@ while raw logs are preserved separately. Three channels, all quiet by default:
    `install.sh` (or by merging `settings.example.json`).
 2. **Distill channel (session end).** On `Stop`, the same hook may hand you a
    `block` instruction asking you to extract the conversation's durable bits into
-   **clean drawers** (decisions, preferences, facts, reusable knowledge) — never
-   the raw transcript, which is already logged. Save each as its own well-titled
-   drawer, then stop. If the session has nothing durable, save nothing. This fires
-   at most once per session (guarded by `stop_hook_active`), and only when a
-   **smart trigger** decides the session is worth distilling: the user-text must
-   be substantive (≥ `SECONDBRAIN_MIN_USER_CHARS` chars across ≥
-   `SECONDBRAIN_MIN_TURNS` turns) AND either contain a marker from
-   `capture_conversation.py:_MARKER_PATTERNS` or be a long session (>=
-   `SECONDBRAIN_LONG_SESSION_TURNS` turns). When the trigger fires, the hook
-   hands you up to `SECONDBRAIN_MAX_CANDIDATES` pre-surfaced lines (each with
-   1 line of preceding user context) — review them, save the good ones, ignore
-   the noise. The raw log is at the path the hook prints, in case you need
-   more context than the candidates.
+   **clean drawers** — never the raw transcript, which is already logged. Save
+   each as its own well-titled drawer using the four-collection taxonomy
+   (`Decisions`, `Preferences`, `Facts`, `Knowledge`), then stop. If the session
+   has nothing durable, save nothing. This fires at most once per session
+   (guarded by `stop_hook_active`), and only when a **smart trigger** decides
+   the session is worth distilling: the user-text must be substantive
+   (≥ `SECONDBRAIN_MIN_USER_CHARS` chars across ≥ `SECONDBRAIN_MIN_TURNS` turns)
+   AND either contain a marker from `capture_conversation.py:_MARKER_PATTERNS`
+   or be a long session (>= `SECONDBRAIN_LONG_SESSION_TURNS` turns). When the
+   trigger fires, the hook hands you up to `SECONDBRAIN_MAX_CANDIDATES`
+   pre-surfaced lines (each with 1 line of preceding user context) — review
+   them, save the good ones, ignore the noise. The raw log is at the path the
+   hook prints, in case you need more context than the candidates.
 3. **Heuristic channel (during the chat).** You should *also* save durable bits
    the moment the user signals permanence — don't wait for session end. Triggers
    that warrant an `add` (no confirmation prompt — be quick):
