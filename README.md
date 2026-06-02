@@ -118,10 +118,13 @@ This repository is itself a Claude Code skill — `SKILL.md` defines triggers an
 
 ```
 Install the secondbrain skill from https://github.com/stancsz/secondbrain
-into my personal Claude Code skills, wire up auto-capture, and verify it works.
+into my personal Claude Code skills. Cloning the repo does NOT configure the
+skill — you MUST also run install.sh, then verify the Stop and PreCompact
+hooks actually landed in ~/.claude/settings.json, then end-to-end test
+add+search. Do not report success until all three are confirmed.
 ```
 
-The agent should then:
+A common failure mode is agents stopping after `git clone` and the CLI smoke test, leaving auto-capture wired to nothing. The agent must complete every step below, in order:
 
 1. **Clone into the skills directory.**
    ```bash
@@ -148,6 +151,14 @@ The agent should then:
    ```
 
 5. **Reload the skill.** Restart Claude Code (or start a new session) so it picks up the new skill, hooks, and slash command.
+
+**Verify the hooks are actually wired.** Run this on your own to confirm — the agent's "I ran install.sh" is not the same as the hooks being present:
+
+```bash
+cat ~/.claude/settings.json | python3 -m json.tool | grep -A 4 -E '"(Stop|PreCompact)"'
+```
+
+You should see a `Stop` and a `PreCompact` entry, each with a `hooks` array whose `command` ends in `hooks/capture_conversation.py`. If those entries are missing, auto-capture is **not** working yet — re-run `bash ~/.claude/skills/secondbrain/install.sh` and check `~/.claude/settings.json` directly.
 
 After that, say "remember this" or "what do I know about X" in any session and the skill takes over.
 
