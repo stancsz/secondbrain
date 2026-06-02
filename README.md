@@ -69,6 +69,8 @@ alias brain='python3 ~/path/to/secondbrain/scripts/brain_cli.py'
 
 The only runtime requirement is Python 3.8+ with `sqlite3` (included in the standard library). The schema uses FTS5, JSON1, and recursive CTEs; these are built into the Python-bundled SQLite since 3.9, otherwise SQLite 3.41+ is required.
 
+To use it as a Claude Code skill (with auto-capture and the `/history` command), see [Use with Claude Code](#use-with-claude-code) below — or just run `bash install.sh` after cloning.
+
 ## Quick start
 
 ```bash
@@ -102,13 +104,56 @@ python3 scripts/brain_cli.py merge-brain --from archive-2026.db
 # Browse past conversations (also available as the /history slash command)
 python3 scripts/brain_cli.py list --collection Conversations --sort updated
 
-# Export (Obsidian-compatible)
-python3 scripts/brain_cli.py export --format markdown --output brain.md
+# Export an Obsidian-compatible vault (one .md file per note, into a directory)
+python3 scripts/brain_cli.py export --format markdown --output ./brain-vault
 ```
 
 ## Use with Claude Code
 
-This repository is itself a Claude Code skill — `SKILL.md` defines triggers and behavior. Three ways to install:
+This repository is itself a Claude Code skill — `SKILL.md` defines triggers and behavior.
+
+### Install by asking your agent (recommended)
+
+`secondbrain` is agent-native, so the fastest install is to let the agent do it. Paste this into Claude Code (or any coding agent with shell access):
+
+```
+Install the secondbrain skill from https://github.com/stancsz/secondbrain
+into my personal Claude Code skills, wire up auto-capture, and verify it works.
+```
+
+The agent should then:
+
+1. **Clone into the skills directory.**
+   ```bash
+   mkdir -p ~/.claude/skills
+   git clone https://github.com/stancsz/secondbrain.git ~/.claude/skills/secondbrain
+   ```
+   (Use `.claude/skills/secondbrain` instead for a single project.)
+
+2. **Smoke-test the CLI** — this also creates `~/.secondbrain/brain.db` on first run.
+   ```bash
+   python3 ~/.claude/skills/secondbrain/scripts/brain_cli.py stats
+   ```
+
+3. **Run the installer** to wire up the auto-capture hooks and the `/history` command without clobbering existing settings.
+   ```bash
+   bash ~/.claude/skills/secondbrain/install.sh
+   ```
+   `install.sh` merges the `Stop` / `PreCompact` hooks into your `settings.json` (it does **not** overwrite the file), symlinks `commands/history.md`, and prints a `SECONDBRAIN_CLI` env-var hint.
+
+4. **Verify** end to end.
+   ```bash
+   python3 ~/.claude/skills/secondbrain/scripts/brain_cli.py add "Install test" "secondbrain is live"
+   python3 ~/.claude/skills/secondbrain/scripts/brain_cli.py search "live"
+   ```
+
+5. **Reload the skill.** Restart Claude Code (or start a new session) so it picks up the new skill, hooks, and slash command.
+
+After that, say "remember this" or "what do I know about X" in any session and the skill takes over.
+
+### Install manually
+
+`SKILL.md` defines the triggers and behavior; cloning the repo into a skills directory is all Claude Code needs. Three ways:
 
 **Project scope** (one project):
 
@@ -134,19 +179,15 @@ Once installed, the agent will catch phrases like "remember this", "what do I kn
 
 ### Auto-capture every conversation (optional but recommended)
 
-If you want the brain to **remember every conversation automatically**, copy the example hook config into your own Claude Code settings:
+If you want the brain to **remember every conversation automatically**, the easiest path is `install.sh`, which merges the hooks into your existing settings (no overwrite) and substitutes the real path for you:
 
 ```bash
-# Personal scope: every project, every conversation
-cp <repo>/settings.example.json ~/.claude/settings.json
-# then edit the file and replace /path/to/secondbrain with the real path
-
-# Or project scope: just this project
-cp <repo>/settings.example.json .claude/settings.json
-# then edit
+bash <repo>/install.sh
 ```
 
-This wires up two hooks that call `hooks/capture_conversation.py`:
+To wire it up by hand instead, merge the entries from `settings.example.json` into your own `~/.claude/settings.json` (personal) or `.claude/settings.json` (project). Don't `cp` it over an existing file — that would discard your other settings. Replace `/path/to/secondbrain` with the real repo path.
+
+Either way, this wires up two hooks that call `hooks/capture_conversation.py`:
 
 - **`Stop`** — saves the full transcript of every conversation into `collection=Conversations`. Quiet, never fails the conversation, and writes a one-line entry to `hooks/capture_conversation.log` so you can audit it.
 - **`PreCompact`** *(optional)* — also saves a snapshot before context compaction in long sessions. Comment this out if it feels noisy.
@@ -190,6 +231,7 @@ Then in any conversation, type `/history` — the agent lists your `collection=C
 1. **Full data ownership.** The store is a plain SQLite file. `sqlite3 brain.db` opens it. The schema is in this repository as `scripts/schema.sql`. There is no export flow because there is no vendor to export from.
 2. **Versionable.** The whole brain is one file. `git init` it, `git push` it to a private GitHub repo, get free history, diff, and disaster recovery.
 3. **Agent-native.** The CLI is the API. There is no second interface for "AI mode" that you have to pay for separately.
+4. **Air-gap and compliance ready.** Zero network calls, zero external dependencies, zero telemetry. Passes the "can legal/security read the whole thing in an afternoon?" test. Runs identically on an internet-connected laptop and a fully isolated private network.
 
 ## When to use
 
@@ -197,6 +239,9 @@ Then in any conversation, type `/history` — the agent lists your `collection=C
 - You want a knowledge base that survives any single vendor disappearing.
 - You are comfortable with a 200-line Python CLI and a SQLite file.
 - You want one tool that humans and agents both drive, with the same data.
+- **Your organisation does not allow third-party memory or data-retention services.** `secondbrain` never phones home, sends no telemetry, and stores nothing outside the file you point it at. Compliance, legal, and security teams can audit the entire codebase in an afternoon — it is 400 lines of stdlib Python and a SQL schema.
+- **You are running agents in an air-gapped or offline environment.** Every dependency ships with Python's standard library. No package registry, no cloud API, no license server. Once the repo is cloned, it works indefinitely with zero network access — on a developer laptop, a private build server, a factory floor, or an isolated government network.
+- **You are building or deploying local agents and need a memory layer that stays local.** Most "agent memory" solutions are SaaS APIs (mem0, Zep, LangMem) or require running a vector database (Qdrant, Weaviate, Chroma). `secondbrain` is a single SQLite file: no daemon to keep alive, no Docker image to pull, no API key to rotate.
 
 ## When not to use
 
