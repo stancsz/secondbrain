@@ -218,7 +218,12 @@ This wires up three hooks:
 
 - **`Stop`** (`hooks/capture_conversation.py`) — logs the transcript to disk,
   then nudges the agent once to distill durable know-how into the brain. Quiet,
-  never wedges the session, and audits to `hooks/capture_conversation.log`.
+  never wedges the session, and audits to `hooks/capture_conversation.log`. The
+  nudge is gated by a **smart trigger**: trivial sessions (short, or no
+  decision/remember markers) skip the block and just leave the log on disk.
+  When the trigger fires, a **heuristic pre-pass** surfaces up to 10 candidate
+  lines for the agent to filter — the agent reviews the candidates, not the
+  full transcript. Result: less latency, higher precision.
 - **`PreCompact`** *(optional)* — snapshots the log before context compaction in
   long sessions. Never distills. Comment out if noisy.
 - **`UserPromptSubmit`** (`hooks/recall_memories.py`) — proactive recall: searches
@@ -228,6 +233,15 @@ Env switches: `SECONDBRAIN_SKIP_CAPTURE=1` (disable the capture hook),
 `SECONDBRAIN_SKIP_DISTILL=1` (log only, no distill nudge),
 `SECONDBRAIN_SKIP_RECALL=1` (disable proactive recall),
 `SECONDBRAIN_LOGS_DIR=/path` (move the log directory).
+
+Smart-trigger knobs (all default-off; tune if you want more or less
+auto-distill):
+
+- `SECONDBRAIN_MIN_USER_CHARS=1500` — min user-text chars before distill fires
+- `SECONDBRAIN_MIN_TURNS=4` — min user-prompt turns before distill fires
+- `SECONDBRAIN_LONG_SESSION_TURNS=20` — above this, the marker check is skipped
+  (long sessions get distilled regardless)
+- `SECONDBRAIN_MAX_CANDIDATES=10` — max candidate lines surfaced to the agent
 
 ```bash
 # disable everything for one session
