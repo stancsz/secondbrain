@@ -367,18 +367,64 @@ class SecondBrain:
             "collections": self.collections(),
         }
 
+    # -- markdown helpers ----------------------------------------------------
+
+    @staticmethod
+    def _yaml_scalar(v: str) -> str:
+        """Serialize a scalar to YAML; JSON-quotes strings with special chars."""
+        if not v:
+            return '""'
+        if re.match(r'^[A-Za-z0-9 _\-\.]+$', v) and not v[0].isspace() and not v[-1].isspace():
+            return v
+        return json.dumps(v, ensure_ascii=False)
+
+    @staticmethod
+    def _yaml_frontmatter(fields: dict) -> str:
+        """Render a dict as a YAML frontmatter block (--- ... ---)."""
+        lines = ["---"]
+        for k, v in fields.items():
+            if v is None:
+                continue
+            if isinstance(v, list):
+                if v:
+                    lines.append(f"{k}:")
+                    for item in v:
+                        lines.append(f"  - {SecondBrain._yaml_scalar(str(item))}")
+                else:
+                    lines.append(f"{k}: []")
+            else:
+                lines.append(f"{k}: {SecondBrain._yaml_scalar(str(v))}")
+        lines.append("---")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _safe_filename(title: str) -> str:
+        """Convert a note title to a filesystem-safe filename stem (no extension)."""
+        safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', title)
+        safe = safe.strip('. ')
+        return safe[:200] or "untitled"
+
+    def _drawer_to_md(self, d: dict) -> str:
+        """Render one drawer as a Markdown document with YAML frontmatter."""
+        fm = self._yaml_frontmatter({
+            "id": d["id"],
+            "title": d["title"],
+            "collection": d.get("collection"),
+            "tags": d.get("tags", []),
+            "sources": d.get("sources", []),
+            "created_at": d.get("created_at", ""),
+            "updated_at": d.get("updated_at", ""),
+        })
+        return f"{fm}\n\n# {d['title']}\n\n{d['content']}\n"
+
+    # -- export / import -----------------------------------------------------
+
     def export(self, collection=None, fmt="json"):
         drawers = self.list(collection=collection, limit=10**9)
         if fmt == "json":
             return json.dumps(drawers, indent=2, ensure_ascii=False)
         if fmt == "markdown":
-            out = []
-            for d in drawers:
-                fm = {"id": d["id"], "collection": d["collection"],
-                      "tags": d["tags"], "sources": d["sources"]}
-                out.append("---\n" + json.dumps(fm, ensure_ascii=False) +
-                           f"\n---\n## {d['title']}\n\n{d['content']}\n")
-            return "\n".join(out)
+            return "\n".join(self._drawer_to_md(d) for d in drawers)
         if fmt == "csv":
             import csv, io
             buf = io.StringIO()
@@ -390,8 +436,97 @@ class SecondBrain:
             return buf.getvalue()
         raise ValueError("format must be json|markdown|csv")
 
-    def import_(self, path, mode="merge"):
-        data = json.loads(Path(path).read_text())
+    def export_vault(self, output_dir, collection=None) -> dict:
+        """Write one Markdown file per drawer into output_dir (Obsidian-compatible vault).
+        Filenames are derived from titles; duplicates get a short-id suffix.
+        Returns {"drawers": N, "path": str(output_dir)}."""
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        drawers = self.list(collection=collection, limit=10**9)
+        seen: dict = {}
+        written = 0
+        for d in drawers:
+            stem = self._safe_filename(d["title"])
+            if stem in seen:
+                stem = f"{stem}_{d['id'][:8]}"
+            seen[stem] = True
+            (output_dir / f"{stem}.md").write_text(
+                self._drawer_to_md(d), encoding="utf-8"
+            )
+            written += 1
+        return {"drawers": written, "path": str(output_dir)}
+
+    @staticmethod
+    def _parse_md_note(text: str) -> "dict | None":
+        """Parse a single Markdown note (YAML frontmatter + # heading + body).
+        Returns a raw drawer dict or None if the text is not a valid note."""
+        text = text.strip()
+        if not text or not text.startswith("---"):
+            return None
+        lines = text.split("\n")
+        fm_lines, i = [], 1
+        while i < len(lines) and lines[i].rstrip() != "---":
+            fm_lines.append(lines[i])
+            i += 1
+        if i >= len(lines):
+            return None  # no closing ---
+        rest_lines = lines[i + 1:]
+
+        # Minimal YAML parser for the known frontmatter format.
+        fm: dict = {}
+        cur_list: "str | None" = None
+        for line in fm_lines:
+            if not line.strip():
+                continue
+            if line.startswith("  - ") and cur_list is not None:
+                raw = line[4:].strip()
+                val = json.loads(raw) if raw.startswith('"') else raw
+                fm[cur_list].append(val)
+            elif ": " in line or line.rstrip().endswith(":"):
+                cur_list = None
+                stripped = line.rstrip()
+                if stripped.endswith(": []"):
+                    key = stripped[:-4].strip()
+                    fm[key] = []
+                elif stripped.endswith(":"):
+                    key = stripped[:-1].strip()
+                    fm[key] = []
+                    cur_list = key
+                else:
+                    key, _, raw_val = line.partition(": ")
+                    key = key.strip()
+                    raw_val = raw_val.strip()
+                    val = json.loads(raw_val) if raw_val.startswith('"') else raw_val
+                    fm[key] = val
+
+        # Extract title from # heading; body is everything after it.
+        title = fm.get("title") or ""
+        body_start = 0
+        for j, bl in enumerate(rest_lines):
+            if not bl.strip():
+                continue
+            if bl.startswith("# "):
+                if not title:
+                    title = bl[2:].strip()
+                body_start = j + 1
+            break
+
+        content = "\n".join(rest_lines[body_start:]).strip()
+        if not title:
+            return None
+
+        return {
+            "id": fm.get("id") or _uuid(),
+            "title": title,
+            "content": content,
+            "collection": fm.get("collection") or None,
+            "tags": fm.get("tags", []) if isinstance(fm.get("tags"), list) else [],
+            "sources": fm.get("sources", []) if isinstance(fm.get("sources"), list) else [],
+            "metadata": {},
+        }
+
+    def _import_drawers(self, data: list, mode: str) -> dict:
+        """Core import loop: insert a list of raw drawer dicts."""
         added = skipped = 0
         for d in data:
             exists = self.con.execute(
@@ -417,8 +552,30 @@ class SecondBrain:
         self.con.commit()
         return {"added": added, "skipped": skipped}
 
+    def _import_vault(self, vault_dir: Path, mode: str) -> dict:
+        """Import all .md files from a vault directory."""
+        drawers = []
+        for f in sorted(vault_dir.glob("*.md")):
+            d = self._parse_md_note(f.read_text(encoding="utf-8"))
+            if d:
+                drawers.append(d)
+        return self._import_drawers(drawers, mode)
+
+    def import_(self, path, mode="merge"):
+        path = Path(path)
+        if path.is_dir():
+            return self._import_vault(path, mode)
+        if path.suffix.lower() in (".md", ".markdown"):
+            d = self._parse_md_note(path.read_text(encoding="utf-8"))
+            return self._import_drawers([d] if d else [], mode)
+        data = json.loads(path.read_text())
+        return self._import_drawers(data, mode)
+
     def close(self):
+        if getattr(self, "_closed", False):
+            return
         self.con.close()
+        self._closed = True
 
     # -- lifecycle / size ---------------------------------------------------
 
