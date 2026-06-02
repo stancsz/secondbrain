@@ -39,12 +39,23 @@ Env switches:
 - `SECONDBRAIN_LOGS_DIR=/path`     override the log directory (default
                                    ~/.secondbrain/logs)
 - `SECONDBRAIN_DB=/path/brain.db`  brain the distill instruction should target
+
+Smart-trigger knobs (the Stop hook skips the distill block when the session
+is too short or has no decision/remember markers — the raw log is still
+saved in either case):
+- `SECONDBRAIN_MIN_USER_CHARS=1500`     min user-text chars to consider distilling
+- `SECONDBRAIN_MIN_TURNS=4`             min user-prompt turns to consider distilling
+- `SECONDBRAIN_LONG_SESSION_TURNS=20`   above this, the marker check is skipped
+                                        (long sessions get distilled regardless)
+- `SECONDBRAIN_MAX_CANDIDATES=10`       max candidate lines surfaced to the agent
+                                        (the agent filters these into drawers)
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -56,6 +67,39 @@ BRAIN_CLI = REPO_DIR / "scripts" / "brain_cli.py"
 LOG_FILE = SCRIPT_DIR / "capture_conversation.log"
 # Allow tests / multi-brain users to redirect the DB. The CLI accepts --db PATH.
 DB_OVERRIDE = os.environ.get("SECONDBRAIN_DB", "").strip()
+
+# Smart-trigger thresholds. All overridable via env. See the module docstring
+# for semantics. The marker list is the codification of the trigger phrases
+# documented in SKILL.md — keep them in sync.
+MIN_USER_CHARS = int(os.environ.get("SECONDBRAIN_MIN_USER_CHARS", "1500"))
+MIN_TURNS = int(os.environ.get("SECONDBRAIN_MIN_TURNS", "4"))
+LONG_SESSION_TURNS = int(os.environ.get("SECONDBRAIN_LONG_SESSION_TURNS", "20"))
+MAX_CANDIDATES = int(os.environ.get("SECONDBRAIN_MAX_CANDIDATES", "10"))
+
+
+# Heuristic marker vocabulary. The agent and the SKILL.md prose use the same
+# category names. One regex per kind. `re.IGNORECASE` is set on all patterns
+# that mix case; literal patterns (TODO, wikilinks) don't need it.
+_MARKER_PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
+    ("decision", re.compile(
+        r"\b(decided|decision|going with|let'?s go with|we will do|we'?ll do)\b",
+        re.IGNORECASE,
+    )),
+    ("preference", re.compile(
+        r"\b(I prefer|I always|I never|from now on)\b",
+        re.IGNORECASE,
+    )),
+    ("remember", re.compile(
+        r"\b(remember this|save this|note that|记一下|存一下|记住)\b",
+        re.IGNORECASE,
+    )),
+    ("fact", re.compile(
+        r"\b(I'?m working on|my project is|my name is|I live in)\b",
+        re.IGNORECASE,
+    )),
+    ("wikilink", re.compile(r"\[\[.+?\]\]")),
+    ("todo", re.compile(r"\b(TODO|FIXME|XXX)\b")),
+]
 
 
 def _logs_dir() -> Path:
@@ -135,6 +179,113 @@ def _extract_text(value) -> "str | None":
     return None
 
 
+def _is_user_prompt_row(row: dict) -> bool:
+    """A `type=="user"` row that actually carries the user's voice.
+
+    Tool-result rows are also typed "user" but have no `role` field; we
+    exclude them so the smart trigger and candidate extractor only see what
+    the user actually said (not the agent's own tool output, the hook's own
+    JSON, etc.)."""
+    if not isinstance(row, dict):
+        return False
+    msg = row.get("message")
+    role = (msg or {}).get("role") or row.get("role")
+    return role == "user"
+
+
+def _user_turns_and_text(transcript_text: str) -> tuple[int, list[str]]:
+    """Walk the JSONL and return (turn_count, [per_turn_text, ...]).
+
+    Only rows where the user is actually speaking are counted. Tool-result
+    rows and assistant rows are skipped — this is critical because the
+    smart trigger and the marker regex both rely on the result being free
+    of agent/hook noise."""
+    turns: list[str] = []
+    for line in transcript_text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not _is_user_prompt_row(row):
+            continue
+        text = _extract_text(row.get("message") or row.get("content"))
+        if text:
+            turns.append(text.strip())
+    return len(turns), turns
+
+
+def _should_distill(transcript_text: str) -> tuple[bool, str]:
+    """Decide whether the Stop hook should block to ask the agent to distill.
+
+    Returns (should_block, reason_for_log). The raw log is always written
+    upstream; this only gates the block decision.
+
+    Rule: block when the session is substantive (chars + turns above the
+    thresholds) AND either a durable-knowledge marker is present OR the
+    session is long enough that the user clearly cares (the long-session
+    override catches philosophical sessions where markers never appear)."""
+    turns, texts = _user_turns_and_text(transcript_text)
+    chars = sum(len(t) for t in texts)
+    if chars < MIN_USER_CHARS:
+        return False, f"user_text too short ({chars} < {MIN_USER_CHARS} chars)"
+    if turns < MIN_TURNS:
+        return False, f"too few user turns ({turns} < {MIN_TURNS})"
+    joined = "\n".join(texts)
+    marker_ok = any(p.search(joined) for _, p in _MARKER_PATTERNS)
+    if not marker_ok and turns <= LONG_SESSION_TURNS:
+        return False, (
+            f"no durable-knowledge marker and turns={turns} <= {LONG_SESSION_TURNS}"
+        )
+    return True, "ok"
+
+
+def _extract_candidates(transcript_text: str) -> list[dict]:
+    """Surface up to MAX_CANDIDATES user lines that look like durable knowledge.
+
+    Returns a list of dicts: {"kind", "text", "prev_line", "line_no"}.
+    `prev_line` is the prior user line (1 line of context) so the agent
+    doesn't have to re-read the log to interpret "going with X". Lines
+    are deduped by (kind, text) and capped at MAX_CANDIDATES. One marker
+    per line — the first matching kind wins."""
+    # First pass: collect (file_line_no, text) for each user-prompt row.
+    user_rows: list[tuple[int, str]] = []
+    for file_line_no, line in enumerate(transcript_text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not _is_user_prompt_row(row):
+            continue
+        text = _extract_text(row.get("message") or row.get("content"))
+        if text:
+            user_rows.append((file_line_no, text.strip()))
+
+    seen: set[tuple[str, str]] = set()
+    candidates: list[dict] = []
+    prev_user_line = ""
+    for file_line_no, text in user_rows:
+        for kind, pattern in _MARKER_PATTERNS:
+            if pattern.search(text):
+                key = (kind, text)
+                if key not in seen:
+                    seen.add(key)
+                    candidates.append({
+                        "kind": kind,
+                        "text": text,
+                        "prev_line": prev_user_line,
+                        "line_no": file_line_no,
+                    })
+                    if len(candidates) >= MAX_CANDIDATES:
+                        return candidates
+                break  # one marker per line
+        prev_user_line = text
+    return candidates
+
+
 def _derive_title(transcript_text: str, payload: dict) -> str:
     """Build a human-readable title. Falls back to a timestamp + id if
     the transcript doesn't have a clean first-user-message."""
@@ -188,15 +339,40 @@ def _write_log(transcript_text: str, payload: dict) -> "Path | None":
         return None
 
 
-def _distill_reason(log_path: "Path | None") -> str:
+def _distill_reason(
+    log_path: "Path | None",
+    candidates: list[dict] | None = None,
+) -> str:
     """The instruction handed back to the agent on Stop. It asks for clean,
-    distilled drawers — not the raw transcript, which is already on disk."""
+    distilled drawers — not the raw transcript, which is already on disk.
+
+    When `candidates` is non-empty, prepends a "Candidates" section so the
+    agent reviews a small filtered list rather than re-reading the full
+    transcript. This is the speed/quality win of the smart trigger."""
     cli = str(BRAIN_CLI)
     db_flag = f" --db {DB_OVERRIDE}" if DB_OVERRIDE else ""
     where = f"\nThe full raw transcript is already saved as a log at:\n  {log_path}\n" if log_path else ""
+
+    candidates_block = ""
+    if candidates:
+        lines = [
+            "I've already done a heuristic pass and surfaced these candidate "
+            "lines that look like durable knowledge. Review them, save the "
+            "good ones as drawers, and ignore the noise. The full raw log "
+            "is at the path above if you need more context.\n",
+            "## Candidates\n",
+        ]
+        for i, c in enumerate(candidates, 1):
+            prev = f"\n   prev: \"{c['prev_line']}\"" if c["prev_line"] else ""
+            lines.append(
+                f"{i}. [{c['kind']}] \"{c['text']}\"  (line {c['line_no']}){prev}"
+            )
+        candidates_block = "\n".join(lines) + "\n\n"
+
     return (
         "Before you finish, distill this conversation into the clean brain."
         f"{where}\n"
+        f"{candidates_block}"
         "Extract ONLY durable, reusable knowledge and save each item as its "
         "own clean drawer (never the raw transcript):\n"
         "  • decisions made   ('we decided X', 'going with Y')\n"
@@ -240,9 +416,15 @@ def main() -> int:
         and not payload.get("stop_hook_active")
     )
     if distill_on:
-        decision = {"decision": "block", "reason": _distill_reason(log_path)}
-        print(json.dumps(decision))
-        _log("requested distillation (blocked stop once)")
+        should_block, why = _should_distill(transcript_text)
+        if should_block:
+            cands = _extract_candidates(transcript_text)
+            decision = {"decision": "block",
+                        "reason": _distill_reason(log_path, cands)}
+            print(json.dumps(decision))
+            _log(f"requested distillation ({len(cands)} candidates): blocked stop once")
+        else:
+            _log(f"skipped distill: {why}")
 
     return 0  # never fail the hook
 

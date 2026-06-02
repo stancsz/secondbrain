@@ -146,12 +146,21 @@ while raw logs are preserved separately. Three channels, all quiet by default:
    writes the full raw transcript to `~/.secondbrain/logs/YYYY/MM/` on every
    session end. This is a *log*, not a brain entry. The user opts in via
    `install.sh` (or by merging `settings.example.json`).
-2. **Distill channel (session end).** On `Stop`, the same hook hands you a
+2. **Distill channel (session end).** On `Stop`, the same hook may hand you a
    `block` instruction asking you to extract the conversation's durable bits into
    **clean drawers** (decisions, preferences, facts, reusable knowledge) — never
    the raw transcript, which is already logged. Save each as its own well-titled
    drawer, then stop. If the session has nothing durable, save nothing. This fires
-   once per session (guarded by `stop_hook_active`).
+   at most once per session (guarded by `stop_hook_active`), and only when a
+   **smart trigger** decides the session is worth distilling: the user-text must
+   be substantive (≥ `SECONDBRAIN_MIN_USER_CHARS` chars across ≥
+   `SECONDBRAIN_MIN_TURNS` turns) AND either contain a marker from
+   `capture_conversation.py:_MARKER_PATTERNS` or be a long session (>=
+   `SECONDBRAIN_LONG_SESSION_TURNS` turns). When the trigger fires, the hook
+   hands you up to `SECONDBRAIN_MAX_CANDIDATES` pre-surfaced lines (each with
+   1 line of preceding user context) — review them, save the good ones, ignore
+   the noise. The raw log is at the path the hook prints, in case you need
+   more context than the candidates.
 3. **Heuristic channel (during the chat).** You should *also* save durable bits
    the moment the user signals permanence — don't wait for session end. Triggers
    that warrant an `add` (no confirmation prompt — be quick):
@@ -163,6 +172,11 @@ while raw logs are preserved separately. Three channels, all quiet by default:
    Don't save: questions, one-off code snippets, transient requests, anything they
    might revoke next message. When in doubt, don't save — the raw log is preserved,
    so anything durable can be distilled from it later.
+
+   The `Stop` hook's marker regex list (`capture_conversation.py:_MARKER_PATTERNS`)
+   is the codification of these categories — when you add a new trigger phrase
+   here, also add it to `_MARKER_PATTERNS` so the smart trigger can surface
+   matching sessions at session end.
 
 **Proactive recall (Mode 2).** If the `UserPromptSubmit` hook
 (`hooks/recall_memories.py`) is installed, relevant drawers from the clean brain

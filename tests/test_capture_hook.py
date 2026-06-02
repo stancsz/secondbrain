@@ -26,6 +26,79 @@ REAL_TRANSCRIPT = json.dumps({
 }) + "\n"
 
 
+def _user_row(text: str) -> str:
+    return json.dumps({
+        "type": "user",
+        "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+    })
+
+
+# 8 user-prompt turns, ~1700 user-text chars, with one "let's go with" decision
+# marker and one "remember this" marker. Long enough to clear the smart
+# trigger (chars + turns) and to produce candidates.
+LONG_TRANSCRIPT_WITH_MARKERS = "\n".join([
+    _user_row(
+        "I want to remember this for later: the secondbrain install.sh has a "
+        "Windows-specific encoding bug that crashes on the first emoji print "
+        "with UnicodeEncodeError on the cp1252 codec, so the install appears "
+        "to succeed but the settings.json file is never actually written."
+    ),
+    _user_row(
+        "Specifically the embedded Python heredoc prints a checkmark via "
+        "print() and the Windows default stdout encoding is cp1252, which "
+        "cannot encode the U+2705 character and raises mid-execution."
+    ),
+    _user_row(
+        "Workaround for users on Windows: prepend PYTHONIOENCODING=utf-8 "
+        "to the install command, or set it inside the script with an "
+        "export at the top of install.sh before the heredoc runs."
+    ),
+    _user_row(
+        "But there's also a separate silent-no-write issue on the first run "
+        "where the heredoc reports success but settings.json mtime proves "
+        "the json.dump never lands; running the same logic directly works."
+    ),
+    _user_row(
+        "Let's go with the heuristic pre-extraction fix combined with a "
+        "smarter trigger that skips the block for short or marker-free "
+        "sessions; this is the recommendation we agreed on."
+    ),
+    _user_row(
+        "What about the long-session override where we skip the marker "
+        "check entirely for sessions above LONG_SESSION_TURNS turns? Add "
+        "a test that covers both the override-on and override-off cases."
+    ),
+    _user_row(
+        "I prefer terse error messages and the kind field for candidates "
+        "should be one of decision, preference, remember, fact, wikilink, "
+        "or todo so the agent can filter quickly without re-reading the log."
+    ),
+    _user_row(
+        "From now on, all print statements in hooks should use ASCII or "
+        "set UTF-8 explicitly to avoid this class of bug on Windows hosts; "
+        "OK let's wrap this up, save the changes, and push a PR for review."
+    ),
+]) + "\n"
+
+
+# 25 user-prompt turns, ~2000 user-text chars, no decision/remember/remember
+# markers. With default LONG_SESSION_TURNS=20 the smart trigger should
+# override and block (turns > 20); with LONG_SESSION_TURNS=999 it should
+# skip the block.
+def _build_no_marker_transcript(n_turns: int = 25) -> str:
+    rows = []
+    for i in range(n_turns):
+        rows.append(_user_row(
+            f"This is turn number {i + 1} of a long philosophical discussion "
+            f"about knowledge graphs and how they relate to long-term memory. "
+            f"There are no durable-knowledge markers in this line by design."
+        ))
+    return "\n".join(rows) + "\n"
+
+
+LONG_TRANSCRIPT_NO_MARKERS = _build_no_marker_transcript(25)
+
+
 class TestExtractText(unittest.TestCase):
     """_extract_text must always return a str or None — never a list."""
 
@@ -85,11 +158,37 @@ class TestWriteLog(unittest.TestCase):
 
 class TestDistillReason(unittest.TestCase):
     def test_reason_mentions_clean_drawers_not_transcript(self):
-        reason = cap._distill_reason(Path("/tmp/logs/x.jsonl"))
+        # Use a relative path so the assertion is portable across Windows
+        # and POSIX (Path() on Windows mangles "/tmp/..." to "\tmp\...").
+        log_path = Path("logs") / "x.jsonl"
+        reason = cap._distill_reason(log_path)
         self.assertIn("distill", reason.lower())
         self.assertIn("never the raw transcript", reason.lower())
-        self.assertIn("/tmp/logs/x.jsonl", reason)
+        self.assertIn(str(log_path), reason)
         self.assertIn("add", reason)
+
+    def test_reason_without_candidates_has_no_candidates_section(self):
+        reason = cap._distill_reason(Path("logs/x.jsonl"), candidates=None)
+        self.assertNotIn("## Candidates", reason)
+
+    def test_reason_with_candidates_includes_section(self):
+        cands = [
+            {"kind": "decision", "text": "going with the heuristic fix",
+             "prev_line": "should we A or B?", "line_no": 42},
+            {"kind": "remember", "text": "remember this",
+             "prev_line": "", "line_no": 87},
+        ]
+        reason = cap._distill_reason(Path("logs/x.jsonl"), candidates=cands)
+        self.assertIn("## Candidates", reason)
+        self.assertIn("[decision]", reason)
+        self.assertIn("going with the heuristic fix", reason)
+        self.assertIn("line 42", reason)
+        self.assertIn("should we A or B?", reason)
+        self.assertIn("[remember]", reason)
+        # Second candidate has no prev_line; it must not render a `prev:` line.
+        # The "remember this" entry is on its own block, so the absence of
+        # a second `prev:` substring is a strong-enough signal here.
+        self.assertEqual(reason.count("prev:"), 1)
 
 
 class TestHookProcess(unittest.TestCase):
@@ -114,12 +213,17 @@ class TestHookProcess(unittest.TestCase):
             return proc, log_files
 
     def test_stop_writes_log_and_blocks_to_distill(self):
-        proc, logs = self._run({"hook_event_name": "Stop", "session_id": "s1"})
+        # Use a long, marker-rich transcript so the smart trigger fires.
+        proc, logs = self._run(
+            {"hook_event_name": "Stop", "session_id": "s1"},
+            transcript=LONG_TRANSCRIPT_WITH_MARKERS,
+        )
         self.assertEqual(proc.returncode, 0)
         self.assertEqual(len(logs), 1)  # log written
         out = json.loads(proc.stdout)   # block decision emitted
         self.assertEqual(out["decision"], "block")
         self.assertIn("distill", out["reason"].lower())
+        self.assertIn("## Candidates", out["reason"])
 
     def test_stop_hook_active_does_not_block_again(self):
         # The second stop (after distillation) must be allowed through.
@@ -178,6 +282,181 @@ class TestHookProcess(unittest.TestCase):
             proc = subprocess.run([sys.executable, str(HOOK)],
                                   input=bad, capture_output=True, text=True, env=env)
             self.assertEqual(proc.returncode, 0)
+
+
+class TestSmartTrigger(unittest.TestCase):
+    """The smart trigger decides when to block the Stop to distill.
+
+    Each test runs the hook as a subprocess so we exercise the same code
+    path Claude Code actually invokes."""
+
+    def _run(self, payload_obj, env_extra=None, transcript=REAL_TRANSCRIPT):
+        env = dict(os.environ)
+        with tempfile.TemporaryDirectory() as td:
+            logs = Path(td) / "logs"
+            tpath = Path(td) / "t.jsonl"
+            tpath.write_text(transcript)
+            payload = dict(payload_obj)
+            payload.setdefault("transcript_path", str(tpath))
+            env["SECONDBRAIN_LOGS_DIR"] = str(logs)
+            if env_extra:
+                env.update(env_extra)
+            proc = subprocess.run(
+                [sys.executable, str(HOOK)],
+                input=json.dumps(payload), capture_output=True, text=True, env=env,
+            )
+            log_files = list(logs.rglob("*.jsonl")) if logs.exists() else []
+            return proc, log_files
+
+    def test_short_transcript_skips_block_but_writes_log(self):
+        proc, logs = self._run({"hook_event_name": "Stop", "session_id": "t1"})
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout.strip(), "")  # no block
+        self.assertEqual(len(logs), 1)             # log still written
+
+    def test_no_markers_default_long_session_skips_block(self):
+        # 15 turns of no-marker text, with default LONG_SESSION_TURNS=20
+        # → still under the long-session override → no block.
+        proc, logs = self._run(
+            {"hook_event_name": "Stop", "session_id": "t2"},
+            transcript=_build_no_marker_transcript(15),
+        )
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout.strip(), "")
+        self.assertEqual(len(logs), 1)
+
+    def test_long_session_blocks_without_marker(self):
+        # 25 turns no marker, default LONG_SESSION_TURNS=20 → override → block.
+        proc, logs = self._run(
+            {"hook_event_name": "Stop", "session_id": "t3"},
+            transcript=LONG_TRANSCRIPT_NO_MARKERS,
+        )
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(len(logs), 1)
+        out = json.loads(proc.stdout)
+        self.assertEqual(out["decision"], "block")
+        # No markers → no Candidates section in the prompt.
+        self.assertNotIn("## Candidates", out["reason"])
+
+    def test_long_session_override_can_be_disabled(self):
+        # Same transcript, but with LONG_SESSION_TURNS=999 → override off → no block.
+        proc, _ = self._run(
+            {"hook_event_name": "Stop", "session_id": "t4"},
+            env_extra={"SECONDBRAIN_LONG_SESSION_TURNS": "999"},
+            transcript=LONG_TRANSCRIPT_NO_MARKERS,
+        )
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout.strip(), "")
+
+    def test_precompact_never_blocks_even_with_long_marker_rich_transcript(self):
+        # PreCompact must NEVER block, regardless of trigger conditions.
+        proc, logs = self._run(
+            {"hook_event_name": "PreCompact", "session_id": "t5"},
+            transcript=LONG_TRANSCRIPT_WITH_MARKERS,
+        )
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout.strip(), "")
+        self.assertEqual(len(logs), 1)
+
+    def test_skip_distill_env_short_circuits_before_smart_trigger(self):
+        # SECONDBRAIN_SKIP_DISTILL=1 must win over a long marker-rich transcript.
+        proc, _ = self._run(
+            {"hook_event_name": "Stop", "session_id": "t6"},
+            env_extra={"SECONDBRAIN_SKIP_DISTILL": "1"},
+            transcript=LONG_TRANSCRIPT_WITH_MARKERS,
+        )
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout.strip(), "")
+
+
+class TestCandidates(unittest.TestCase):
+    """The candidate extractor surfaces pre-filtered lines for the agent."""
+
+    def test_user_text_only_excludes_assistant_and_tool_rows(self):
+        # Mix in assistant rows containing marker words; they must not appear.
+        mixed = (
+            json.dumps({"type": "assistant",
+                        "message": {"role": "assistant",
+                                    "content": [{"type": "text",
+                                                 "text": "decided: use the heuristic"}]}}) + "\n"
+            + _user_row("remember this: the install.sh bug on Windows is real") + "\n"
+            + json.dumps({"type": "user",
+                        "message": {"content": [{"type": "tool_result",
+                                                 "tool_use_id": "x",
+                                                 "content": "TODO: re-run install"}]}}) + "\n"
+            + _user_row("this is a normal follow-up turn with enough words "
+                        "to push the count above the threshold for testing") + "\n"
+        )
+        cands = cap._extract_candidates(mixed)
+        kinds = [c["kind"] for c in cands]
+        texts = [c["text"] for c in cands]
+        # The "decided" came from the assistant row → must not appear.
+        self.assertNotIn("decided: use the heuristic", texts)
+        # The "TODO" came from a tool_result row → must not appear.
+        self.assertNotIn("TODO: re-run install", texts)
+        # The "remember" came from a real user row → must appear.
+        self.assertIn("remember this: the install.sh bug on Windows is real", texts)
+
+    def test_candidate_has_prev_line(self):
+        # First user row: prev_line is "". Second user row: prev_line is the first.
+        rows = [
+            _user_row("should we A or B?"),
+            _user_row("let's go with A"),
+        ]
+        cands = cap._extract_candidates("\n".join(rows) + "\n")
+        matched = [c for c in cands if c["text"] == "let's go with A"]
+        self.assertEqual(len(matched), 1)
+        self.assertEqual(matched[0]["prev_line"], "should we A or B?")
+        self.assertEqual(matched[0]["kind"], "decision")
+
+    def test_first_candidate_has_empty_prev_line(self):
+        # When the matching line is the very first user row, prev_line is "".
+        rows = [_user_row("going with the heuristic fix is the right call")]
+        cands = cap._extract_candidates("\n".join(rows) + "\n")
+        self.assertEqual(len(cands), 1)
+        self.assertEqual(cands[0]["prev_line"], "")
+
+    def test_dedup_by_kind_and_text(self):
+        # Same line repeated 5 times → only one candidate.
+        rows = [_user_row("let's go with the heuristic fix")] * 5
+        cands = cap._extract_candidates("\n".join(rows) + "\n")
+        self.assertEqual(len(cands), 1)
+
+    def test_cap_at_max_candidates(self):
+        # 30 unique matching lines, but MAX_CANDIDATES=10 → cap kicks in.
+        rows = [
+            _user_row(f"let's go with option number {i} for the test")
+            for i in range(30)
+        ]
+        cands = cap._extract_candidates("\n".join(rows) + "\n")
+        self.assertEqual(len(cands), 10)
+
+    def test_one_marker_per_line(self):
+        # A line that matches both "decision" and "preference" only emits one.
+        rows = [_user_row("I prefer going with the heuristic fix")]
+        cands = cap._extract_candidates("\n".join(rows) + "\n")
+        self.assertEqual(len(cands), 1)
+        self.assertEqual(cands[0]["kind"], "decision")  # first match wins
+
+    def test_should_distill_short_transcript(self):
+        ok, why = cap._should_distill(REAL_TRANSCRIPT)
+        self.assertFalse(ok)
+        self.assertIn("user_text too short", why)
+
+    def test_should_distill_no_markers_under_long_threshold(self):
+        ok, why = cap._should_distill(_build_no_marker_transcript(10))
+        self.assertFalse(ok)
+        self.assertIn("no durable-knowledge marker", why)
+
+    def test_should_distill_markers_present(self):
+        ok, why = cap._should_distill(LONG_TRANSCRIPT_WITH_MARKERS)
+        self.assertTrue(ok)
+        self.assertEqual(why, "ok")
+
+    def test_should_distill_long_session_overrides_marker(self):
+        ok, why = cap._should_distill(LONG_TRANSCRIPT_NO_MARKERS)
+        self.assertTrue(ok)
+        self.assertEqual(why, "ok")
 
 
 if __name__ == "__main__":
