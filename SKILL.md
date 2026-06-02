@@ -43,9 +43,24 @@ user didn't give — infer sensible ones and state your assumption in one line.
 
 ---
 
+## Path to the CLI
+
+`<skill_root>` is the directory that contains this `SKILL.md` file.
+The CLI is always at `<skill_root>/scripts/brain_cli.py`.
+
+Typical installed paths:
+- Personal scope: `~/.claude/skills/secondbrain/scripts/brain_cli.py`
+- Project scope: `.claude/skills/secondbrain/scripts/brain_cli.py`
+
+If the env var `SECONDBRAIN_CLI` is set, use `python3 "$SECONDBRAIN_CLI"` directly.
+Otherwise, resolve the path from this file's location. If you cannot determine it,
+ask the user once: "Where is secondbrain installed?"
+
+---
+
 ## Commands
 
-Run as: `python3 scripts/brain_cli.py <command> [args]`. Add `--json` to any read
+Run as: `python3 <skill_root>/scripts/brain_cli.py <command> [args]`. Add `--json` to any read
 command for structured output you can parse; omit it for human-readable text.
 
 - `add "<title>" "<content>" [--collection C] [--tags a,b] [--source URL]`
