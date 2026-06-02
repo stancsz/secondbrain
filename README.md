@@ -231,6 +231,7 @@ Then in any conversation, type `/history` — the agent lists your `collection=C
 1. **Full data ownership.** The store is a plain SQLite file. `sqlite3 brain.db` opens it. The schema is in this repository as `scripts/schema.sql`. There is no export flow because there is no vendor to export from.
 2. **Versionable.** The whole brain is one file. `git init` it, `git push` it to a private GitHub repo, get free history, diff, and disaster recovery.
 3. **Agent-native.** The CLI is the API. There is no second interface for "AI mode" that you have to pay for separately.
+4. **Air-gap and compliance ready.** Zero network calls, zero external dependencies, zero telemetry. Passes the "can legal/security read the whole thing in an afternoon?" test. Runs identically on an internet-connected laptop and a fully isolated private network.
 
 ## When to use
 
@@ -238,6 +239,9 @@ Then in any conversation, type `/history` — the agent lists your `collection=C
 - You want a knowledge base that survives any single vendor disappearing.
 - You are comfortable with a 200-line Python CLI and a SQLite file.
 - You want one tool that humans and agents both drive, with the same data.
+- **Your organisation does not allow third-party memory or data-retention services.** `secondbrain` never phones home, sends no telemetry, and stores nothing outside the file you point it at. Compliance, legal, and security teams can audit the entire codebase in an afternoon — it is 400 lines of stdlib Python and a SQL schema.
+- **You are running agents in an air-gapped or offline environment.** Every dependency ships with Python's standard library. No package registry, no cloud API, no license server. Once the repo is cloned, it works indefinitely with zero network access — on a developer laptop, a private build server, a factory floor, or an isolated government network.
+- **You are building or deploying local agents and need a memory layer that stays local.** Most "agent memory" solutions are SaaS APIs (mem0, Zep, LangMem) or require running a vector database (Qdrant, Weaviate, Chroma). `secondbrain` is a single SQLite file: no daemon to keep alive, no Docker image to pull, no API key to rotate.
 
 ## When not to use
 
