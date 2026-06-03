@@ -161,7 +161,7 @@ present again).
 ## Why this is "like agent context compression"
 
 Agent context compression keeps the most relevant tokens and drops
-the rest. `secondbrain` does the same at the drawer granularity:
+the rest. `second-brain` does the same at the drawer granularity:
 
 - **Distill** = "keep tokens relevant to topic X"
 - **Archive** = "drop tokens I haven't looked at in 6 months"

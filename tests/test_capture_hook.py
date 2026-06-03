@@ -38,7 +38,7 @@ def _user_row(text: str) -> str:
 # trigger (chars + turns) and to produce candidates.
 LONG_TRANSCRIPT_WITH_MARKERS = "\n".join([
     _user_row(
-        "I want to remember this for later: the secondbrain install.sh has a "
+        "I want to remember this for later: the second-brain install.sh has a "
         "Windows-specific encoding bug that crashes on the first emoji print "
         "with UnicodeEncodeError on the cp1252 codec, so the install appears "
         "to succeed but the settings.json file is never actually written."
@@ -552,7 +552,7 @@ class TestStopHookProductionShape(unittest.TestCase):
         # containing decision/TODO/wikilink markers.
         rows = []
         rows.append(_user_row(
-            "I want to remember this for later: the secondbrain install.sh has "
+            "I want to remember this for later: the second-brain install.sh has "
             "a Windows-specific encoding bug. The fix is to set "
             "PYTHONIOENCODING=utf-8 in install.sh before the heredoc runs."
         ))

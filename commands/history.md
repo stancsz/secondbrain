@@ -1,5 +1,5 @@
 ---
-description: Browse past conversation logs saved by secondbrain. Lists raw transcript log files under ~/.secondbrain/logs/, then opens the one you pick in a readable form.
+description: Browse past conversation logs saved by second-brain. Lists raw transcript log files under ~/.secondbrain/logs/, then opens the one you pick in a readable form.
 ---
 
 # /history
@@ -19,7 +19,7 @@ sees when the user types `/history`.
    `YYYY-MM-DD__<session8>.jsonl`. List the most recent ~30, newest first:
 
    ```bash
-   ls -1t "${SECONDBRAIN_LOGS_DIR:-$HOME/.secondbrain/logs}"/*/*/*.jsonl 2>/dev/null | head -30
+   ls -1t "${SECONDBRAIN_LOGS_DIR:-$HOME/.second-brain/logs}"/*/*/*.jsonl 2>/dev/null | head -30
    ```
 
    If there are none, tell the user: "No conversation logs yet. If you wired up

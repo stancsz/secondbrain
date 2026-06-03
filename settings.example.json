@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /path/to/secondbrain/hooks/capture_conversation.py"
+            "command": "python3 /path/to/second-brain/hooks/capture_conversation.py"
           }
         ]
       }
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /path/to/secondbrain/hooks/capture_conversation.py"
+            "command": "python3 /path/to/second-brain/hooks/capture_conversation.py"
           }
         ]
       }
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /path/to/secondbrain/hooks/recall_memories.py"
+            "command": "python3 /path/to/second-brain/hooks/recall_memories.py"
           }
         ]
       }

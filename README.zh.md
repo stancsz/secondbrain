@@ -1,4 +1,4 @@
-# secondbrain | 长脑子
+# second-brain | 长脑子
 
 > 面向 AI agent 的本地文件型知识图谱。一个 SQLite 文件,零依赖,数据完全归你。
 >
@@ -11,23 +11,23 @@
 
 ---
 
-> 你不是在养第二个脑子,你在租一个。每隔几年,房租就涨一次 — 导出要 Pro、API 收紧、公司差点倒闭(或者被收购)。你迁一次数据,丢一次结构,然后循环重来。`secondbrain` 的赌注是:一个文件,在你的 home 目录,版本化在你的 git repo。没有"迁移计划"这个概念,因为从来没有进过别人的服务器。
+> 你不是在养第二个脑子,你在租一个。每隔几年,房租就涨一次 — 导出要 Pro、API 收紧、公司差点倒闭(或者被收购)。你迁一次数据,丢一次结构,然后循环重来。`second-brain` 的赌注是:一个文件,在你的 home 目录,版本化在你的 git repo。没有"迁移计划"这个概念,因为从来没有进过别人的服务器。
 
 ---
 
 ## 这是什么
 
-`secondbrain` 是一个为 AI agent 设计的个人知识存储。笔记保存在 `~/.secondbrain/brain.db` 这一个 SQLite 文件中,只依赖 Python 标准库 —— 没有 `pip install`,没有 `docker compose up`,没有云服务账号。
+`second-brain` 是一个为 AI agent 设计的个人知识存储。笔记保存在 `~/.secondbrain/brain.db` 这一个 SQLite 文件中,只依赖 Python 标准库 —— 没有 `pip install`,没有 `docker compose up`,没有云服务账号。
 
 笔记之间通过正文里的 `[[wikilinks]]` 自动建立关联,在你写作的同时就构建出知识图谱。系统支持全文检索、类型化关系、标签、集合、软删除,以及与 Markdown 的双向导出。
 
-仓库根目录的 `SKILL.md` 让 `secondbrain` 成为一个开箱即用的 [Claude Code skill](https://docs.claude.com/en/docs/claude-code/skills):任何加载该 skill 的 agent 都能在对话中保存、搜索、链接你脑子里的笔记。
+仓库根目录的 `SKILL.md` 让 `second-brain` 成为一个开箱即用的 [Claude Code skill](https://docs.claude.com/en/docs/claude-code/skills):任何加载该 skill 的 agent 都能在对话中保存、搜索、链接你脑子里的笔记。
 
 ## 为什么做这个
 
 目前大多数"AI 记忆"产品都把你的数据存放在第三方云端,API 收费,而且供应商可以随时调整定价、政策,甚至关停。即使是 Obsidian 这类本地优先的工具,也无法原生与 agent 对接 —— 你最终要在两个工具之间切换:一个给"人"用,一个按调用付费给"AI"用。
 
-`secondbrain` 是一个克制的替代方案:
+`second-brain` 是一个克制的替代方案:
 
 - **一个文件。** SQLite 数据库,任何客户端都能打开,`cp` 就能复制,`rsync` 就能备份,`git` 就能版本化。
 - **标准 schema。** 表结构以 `scripts/schema.sql` 形式直接进仓库,纯 SQL —— 没有私有格式,没有迁移服务。
@@ -53,8 +53,8 @@
 ## 安装
 
 ```bash
-git clone https://github.com/stancsz/secondbrain.git
-cd secondbrain
+git clone https://github.com/stancsz/second-brain.git
+cd second-brain
 python3 scripts/brain_cli.py stats    # 首次运行会自动创建 ~/.secondbrain/brain.db
 ```
 
@@ -63,7 +63,7 @@ python3 scripts/brain_cli.py stats    # 首次运行会自动创建 ~/.secondbra
 ```bash
 ln -s "$(pwd)/scripts/brain_cli.py" /usr/local/bin/brain
 # 或
-alias brain='python3 ~/path/to/secondbrain/scripts/brain_cli.py'
+alias brain='python3 ~/path/to/second-brain/scripts/brain_cli.py'
 ```
 
 唯一运行依赖是 Python 3.8+ 自带的 `sqlite3`。Schema 使用 FTS5、JSON1、递归 CTE:Python 自带 SQLite 3.9+ 已包含这些,否则需要 SQLite 3.41+。
@@ -113,20 +113,20 @@ python3 scripts/brain_cli.py export --format markdown --output brain.md
 
 ```bash
 mkdir -p .claude/skills
-git clone https://github.com/stancsz/secondbrain.git .claude/skills/secondbrain
+git clone https://github.com/stancsz/second-brain.git .claude/skills/second-brain
 ```
 
 **个人级**(所有项目都生效):
 
 ```bash
 mkdir -p ~/.claude/skills
-git clone https://github.com/stancsz/secondbrain.git ~/.claude/skills/secondbrain
+git clone https://github.com/stancsz/second-brain.git ~/.claude/skills/second-brain
 ```
 
 **Submodule**(锁定版本,跟随项目升级):
 
 ```bash
-git submodule add https://github.com/stancsz/secondbrain.git .claude/skills/secondbrain
+git submodule add https://github.com/stancsz/second-brain.git .claude/skills/second-brain
 ```
 
 装好后,agent 会自动识别 "记一下"、"我之前写过 X 吗"、"catch me up on project Y" 这类表达,并从你脑中的笔记里找答案。
@@ -138,7 +138,7 @@ git submodule add https://github.com/stancsz/secondbrain.git .claude/skills/seco
 ```bash
 # 个人级:所有项目、所有对话都生效
 cp <repo>/settings.example.json ~/.claude/settings.json
-# 然后编辑,把里面的 /path/to/secondbrain 替换成真实路径
+# 然后编辑,把里面的 /path/to/second-brain 替换成真实路径
 
 # 或项目级:只对当前项目生效
 cp <repo>/settings.example.json .claude/settings.json
@@ -185,9 +185,9 @@ ln -s <repo>/commands/history.md ~/.claude/commands/history.md
 | Quivr / privateGPT | 本地向量库 | 通过 API | 无 | 手动 | 否 | Docker + 模型 |
 | Apple Notes / Keep / OneNote | 厂商云 | 否 | 高 | 厂商控制 | 否 | 系统自带 |
 | Evernote | 厂商云 | 否 | 高(历史教训) | 厂商控制 | 否 | 桌面 / Web |
-| **secondbrain** | **本地 SQLite** | **是(CLI)** | **无** | **`cp` / `git push`** | **是(agent 原生)** | **`git clone`** |
+| **second-brain** | **本地 SQLite** | **是(CLI)** | **无** | **`cp` / `git push`** | **是(agent 原生)** | **`git clone`** |
 
-**这份列表里,只有 `secondbrain` 能给的承诺:**
+**这份列表里,只有 `second-brain` 能给的承诺:**
 
 1. **数据完全归你。** 存储就是一个普通 SQLite 文件,`sqlite3 brain.db` 直接打开。Schema 在仓库里以 `scripts/schema.sql` 形式维护。没有"导出"这个流程,因为从来没有进过别人的服务器。
 2. **可版本化。** 整个脑子就一个文件。`git init` 它,`git push` 到私人 GitHub repo,免费拿到历史、diff、灾备。
@@ -204,7 +204,7 @@ ln -s <repo>/commands/history.md ~/.claude/commands/history.md
 
 - 你要的是面向非技术用户的所见即所得笔记 App → 用 Obsidian 或 Notion。
 - 你要的是带权限、评论的团队 Wiki → 用 Notion 或 Confluence。
-- 你要存几百万条文档、跑大规模向量检索 → 用专业向量数据库;`secondbrain` 是个人量级的。
+- 你要存几百万条文档、跑大规模向量检索 → 用专业向量数据库;`second-brain` 是个人量级的。
 - 你本地不能跑 Python → 用托管笔记服务。
 
 ## 架构
@@ -237,4 +237,4 @@ ln -s <repo>/commands/history.md ~/.claude/commands/history.md
 
 ## 许可
 
-[MIT](./LICENSE) © 2026 secondbrain contributors
+[MIT](./LICENSE) © 2026 second-brain contributors

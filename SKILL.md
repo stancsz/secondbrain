@@ -1,5 +1,5 @@
 ---
-name: secondbrain
+name: second-brain
 description: A local, file-based knowledge graph ("second brain" / 长脑子 / 脑子不够用了) for capturing, searching, linking, and recalling notes across conversations. Use this skill whenever the user wants to SAVE something for later ("remember this", "save this article/snippet", "note that...", "记一下", "存一下", "脑子记不住"), RECALL their own knowledge ("what do I know about X?", "what have I written on Y?", "catch me up on project Z", "我之前写过 X 吗"), find GAPS ("what am I missing on X?", "我还缺什么"), or manage a personal notes/wiki/zettelkasten. Trigger it even when the user doesn't say "second brain" — any time they treat you as if you should retain or retrieve their personal notes, reach for this skill instead of answering from training data. The store is a single SQLite file with full-text search and a wikilink-driven relation graph.
 ---
 
@@ -50,12 +50,12 @@ user didn't give — infer sensible ones and state your assumption in one line.
 The CLI is always at `<skill_root>/scripts/brain_cli.py`.
 
 Typical installed paths:
-- Personal scope: `~/.claude/skills/secondbrain/scripts/brain_cli.py`
-- Project scope: `.claude/skills/secondbrain/scripts/brain_cli.py`
+- Personal scope: `~/.claude/skills/second-brain/scripts/brain_cli.py`
+- Project scope: `.claude/skills/second-brain/scripts/brain_cli.py`
 
 If the env var `SECONDBRAIN_CLI` is set, use `python3 "$SECONDBRAIN_CLI"` directly.
 Otherwise, resolve the path from this file's location. If you cannot determine it,
-ask the user once: "Where is secondbrain installed?"
+ask the user once: "Where is second-brain installed?"
 
 ---
 
@@ -185,7 +185,7 @@ while raw logs are preserved separately. Three channels, all quiet by default:
 **Proactive recall (Mode 2).** If the `UserPromptSubmit` hook
 (`hooks/recall_memories.py`) is installed, relevant drawers from the clean brain
 are injected into your context automatically before you answer — you'll see a
-"🧠 secondbrain — possibly relevant notes" block. Use those notes when they fit
+"🧠 second-brain — possibly relevant notes" block. Use those notes when they fit
 and cite the 8-char id; ignore them when they don't. This is the automatic
 counterpart to the on-demand recall in the intent table (you can always run
 `search` yourself too).
@@ -195,7 +195,7 @@ working brain after copying the cold drawers out. There is no `--soft` flag. If 
 might want them back, suggest running with `--dry-run` first to see what would be moved,
 or remind them that `merge-brain --from <archive>` is the round-trip.
 
-**Be quiet about activity.** Hard cap: ≤1 line of user-visible output per secondbrain
+**Be quiet about activity.** Hard cap: ≤1 line of user-visible output per second-brain
 event. This skill fires on every prompt (recall) and at session end (distill); pages of
 output destroy the user's trust in the skill. Rules:
 

@@ -30,7 +30,7 @@ Wire it up in `~/.claude/settings.json` (or `.claude/settings.json`):
             "hooks": [
               {
                 "type": "command",
-                "command": "python3 /path/to/secondbrain/hooks/recall_memories.py"
+                "command": "python3 /path/to/second-brain/hooks/recall_memories.py"
               }
             ]
           }
@@ -195,7 +195,7 @@ def _format_context(drawers: list) -> str:
     Kept terse on purpose: this prints on every prompt, so it must not feel
     like noise. Just the bullets — the SKILL.md tells the agent how to use
     them and when to stay quiet about them."""
-    lines = ["🧠 secondbrain — possibly relevant notes (cite 8-char id, ignore if irrelevant):"]
+    lines = ["🧠 second-brain — possibly relevant notes (cite 8-char id, ignore if irrelevant):"]
     for d in drawers:
         coll = f" [{d['collection']}]" if d.get("collection") else ""
         lines.append(f"- \"{d['title']}\"{coll} ({d['id'][:8]})")

@@ -148,7 +148,7 @@ class TestHookNeverBlocks(unittest.TestCase):
             proc = self._run('{"prompt":"why does checkout keep timing out?"}',
                              {"SECONDBRAIN_DB": db})
             self.assertEqual(proc.returncode, 0)
-            self.assertIn("secondbrain", proc.stdout)
+            self.assertIn("second-brain", proc.stdout)
             self.assertIn("Checkout timeout fix", proc.stdout)
 
 
