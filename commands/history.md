@@ -41,8 +41,8 @@ sees when the user types `/history`.
 
 5. **Offer follow-ups.** After showing the conversation, ask if they want to:
    - **Distill it into the brain** — extract durable decisions/facts/preferences
-     as clean drawers with `brain add ...` (the same thing the Stop hook asks
-     for automatically; useful if distillation was skipped or you want more).
+     as clean drawers with `brain add ...`. (The Stop hook used to nudge
+     this automatically; now it's a manual step you can run any time.)
    - Search across logs (`grep -l "<term>" ~/.secondbrain/logs/*/*/*.jsonl`).
    - Summarize a slice.
 
@@ -53,5 +53,5 @@ sees when the user types `/history`.
   raw logs. Browsing **what was said in a past session** is what `/history` is for.
 - Natural phrases like "show me my last 3 conversations" or "what did we talk
   about last Tuesday?" should route through this same log-browsing flow.
-- Distillation is how knowledge gets from a log into the brain — either the
-  automatic Stop-hook nudge, or you doing it explicitly from here.
+- Distillation is how knowledge gets from a log into the brain. Run it
+  explicitly with `brain add ...` from any context (here, or mid-session).

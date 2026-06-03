@@ -217,19 +217,19 @@ class TestHookProcess(unittest.TestCase):
             log_files = list(logs.rglob("*.jsonl")) if logs.exists() else []
             return proc, log_files
 
-    def test_stop_writes_log_and_blocks_to_distill(self):
-        # Use a long, marker-rich transcript so the smart trigger fires.
+    def test_stop_writes_log_and_emits_no_block(self):
+        # The hook writes the log and exits silently. It no longer emits a
+        # `block` decision because Claude Code surfaces every block as a
+        # "Stop hook error" banner in the UI, which made the skill look
+        # broken even when the block was a legitimate "please distill" nudge.
+        # Distillation now relies on the agent reading SKILL.md at session end.
         proc, logs = self._run(
             {"hook_event_name": "Stop", "session_id": "s1"},
             transcript=LONG_TRANSCRIPT_WITH_MARKERS,
         )
         self.assertEqual(proc.returncode, 0)
-        self.assertEqual(len(logs), 1)  # log written
-        out = json.loads(proc.stdout)   # block decision emitted
-        self.assertEqual(out["decision"], "block")
-        self.assertIn("distill", out["reason"].lower())
-        # The terse reason no longer surfaces candidates in the block output.
-        self.assertNotIn("Candidates", out["reason"])
+        self.assertEqual(len(logs), 1)              # log written
+        self.assertEqual(proc.stdout.strip(), "")   # no block, no banner
 
     def test_stop_hook_active_does_not_block_again(self):
         # The second stop (after distillation) must be allowed through.
@@ -289,19 +289,6 @@ class TestHookProcess(unittest.TestCase):
                                   input=bad, capture_output=True, text=True, env=env)
             self.assertEqual(proc.returncode, 0)
 
-    def test_stop_block_reason_is_one_line(self):
-        # The block reason must fit in one line — verbosity is the regression
-        # we keep tripping on, so pin it here. Anything with a newline is too
-        # much surface area for the agent's context.
-        proc, _ = self._run(
-            {"hook_event_name": "Stop", "session_id": "terse"},
-            transcript=LONG_TRANSCRIPT_WITH_MARKERS,
-        )
-        self.assertEqual(proc.returncode, 0)
-        reason = json.loads(proc.stdout)["reason"]
-        self.assertNotIn("\n", reason,
-                         f"distill reason must be a single line, got: {reason!r}")
-
 
 class TestSmartTrigger(unittest.TestCase):
     """The smart trigger decides when to block the Stop to distill.
@@ -344,18 +331,17 @@ class TestSmartTrigger(unittest.TestCase):
         self.assertEqual(proc.stdout.strip(), "")
         self.assertEqual(len(logs), 1)
 
-    def test_long_session_blocks_without_marker(self):
-        # 25 turns no marker, default LONG_SESSION_TURNS=20 → override → block.
+    def test_long_session_does_not_emit_block(self):
+        # 25 turns no marker, default LONG_SESSION_TURNS=20 → would have
+        # blocked, but the hook no longer emits a block decision at all.
+        # The log is still written; stdout stays empty.
         proc, logs = self._run(
             {"hook_event_name": "Stop", "session_id": "t3"},
             transcript=LONG_TRANSCRIPT_NO_MARKERS,
         )
         self.assertEqual(proc.returncode, 0)
         self.assertEqual(len(logs), 1)
-        out = json.loads(proc.stdout)
-        self.assertEqual(out["decision"], "block")
-        # No markers → no Candidates section in the prompt.
-        self.assertNotIn("Candidates", out["reason"])
+        self.assertEqual(proc.stdout.strip(), "")
 
     def test_long_session_override_can_be_disabled(self):
         # Same transcript, but with LONG_SESSION_TURNS=999 → override off → no block.
@@ -556,9 +542,9 @@ LEAKY_FILE_DUMP = (
 class TestStopHookProductionShape(unittest.TestCase):
     """End-to-end regression for the 2026-06-02 tool-result-leak bug.
 
-    The transcript shape, marker leak, and verbosity blow-up that prompted
-    this test all came from a real Stop-hook payload. If any of these asserts
-    fire again, the hook is regressing the user's '≤1 line per event' rule."""
+    The hook no longer emits a block decision, so most of the previous
+    reason-shape tests are gone. The remaining checks pin the candidate
+    function's filter so the leak can never return."""
 
     def _build_real_shape_transcript(self) -> str:
         # 8 real user prompts (~1700 chars) interleaved with assistant
@@ -633,28 +619,14 @@ class TestStopHookProductionShape(unittest.TestCase):
             )
             return proc
 
-    def test_no_file_dump_leaks_into_reason(self):
+    def test_hook_emits_no_block_for_real_shape_transcript(self):
+        # Even on the multi-KB tool-result transcript that originally
+        # produced the leak, the hook must stay silent on stdout.
         proc = self._run_hook(self._build_real_shape_transcript())
         self.assertEqual(proc.returncode, 0)
-        out = json.loads(proc.stdout)
-        self.assertEqual(out["decision"], "block")
-        reason = out["reason"]
-        # The 60x-repeated marker phrase from the file dump must never appear
-        # in the candidate list. If it does, the tool_result filter regressed.
-        leaked = LEAKY_FILE_DUMP[:50]
-        self.assertNotIn(leaked, reason,
-                         "tool_result content leaked into the distill reason")
-
-    def test_reason_size_is_bounded(self):
-        # Even with 13 user turns + 3 multi-KB tool results, the reason the
-        # hook sends back must stay terse (≤1 line per event rule). 4 KB is
-        # the budget; without the fix, the original bug emitted ~30 KB.
-        proc = self._run_hook(self._build_real_shape_transcript())
-        self.assertEqual(proc.returncode, 0)
-        reason = json.loads(proc.stdout)["reason"]
-        self.assertLessEqual(len(reason), 4096,
-                             f"distill reason ballooned to {len(reason)} chars "
-                             "(budget 4096); the verbosity rule has regressed")
+        self.assertEqual(proc.stdout.strip(), "",
+                         "hook must not emit a block decision; the 'Stop hook "
+                         "error' banner it triggers looks like a bug")
 
     def test_candidates_function_still_filters_tool_results(self):
         # The candidates function continues to exist and stays correct; the

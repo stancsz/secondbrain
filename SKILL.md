@@ -158,21 +158,13 @@ while raw logs are preserved separately. Three channels, all quiet by default:
    writes the full raw transcript to `~/.secondbrain/logs/YYYY/MM/` on every
    session end. This is a *log*, not a brain entry. The user opts in via
    `install.sh` (or by merging `settings.example.json`).
-2. **Distill channel (session end).** On `Stop`, the same hook may hand you a
-   `block` instruction asking you to extract the conversation's durable bits into
-   **clean drawers** — never the raw transcript, which is already logged. Save
-   each as its own well-titled drawer using the four-collection taxonomy
-   (`Decisions`, `Preferences`, `Facts`, `Knowledge`), then stop. If the session
-   has nothing durable, save nothing. This fires at most once per session
-   (guarded by `stop_hook_active`), and only when a **smart trigger** decides
-   the session is worth distilling: the user-text must be substantive
-   (≥ `SECONDBRAIN_MIN_USER_CHARS` chars across ≥ `SECONDBRAIN_MIN_TURNS` turns)
-   AND either contain a marker from `capture_conversation.py:_MARKER_PATTERNS`
-   or be a long session (>= `SECONDBRAIN_LONG_SESSION_TURNS` turns). When the
-   trigger fires, the hook hands you up to `SECONDBRAIN_MAX_CANDIDATES`
-   pre-surfaced lines (each with 1 line of preceding user context) — review
-   them, save the good ones, ignore the noise. The raw log is at the path the
-   hook prints, in case you need more context than the candidates.
+2. **Distill (session end).** The hook no longer emits a `block` decision on
+   `Stop` — Claude Code surfaces every block as a "Stop hook error" banner in
+   the UI, which made the skill look broken. At session end, the agent
+   reviews the log path the hook printed and saves the conversation's
+   durable bits as clean drawers (taxonomy: `Decisions` / `Preferences` /
+   `Facts` / `Knowledge`). If nothing is durable, say "Nope." and stop.
+   The hook still writes the log; the agent owns the distill step.
 3. **Heuristic channel (during the chat).** You should *also* save durable bits
    the moment the user signals permanence — don't wait for session end. Triggers
    that warrant an `add` (no confirmation prompt — be quick):
@@ -212,7 +204,7 @@ output destroy the user's trust in the skill. Rules:
 - **Heuristic save mid-chat:** exactly one short line. `Saved abc12345.` Nothing more.
 - **Bulk capture:** one summary line total. `Saved N drawers.`
 - **Distill at session end:** one summary line. `Distilled N drawers (2 Decisions, 1 Knowledge).` No per-`add` echo.
-- **No-op is terse, not silent.** "Not worth saving." 2-3 words max, no reason, no candidate breakdown. Never "No durable knowledge to save — all candidates were X, Y, Z" sentences.
+- **No-op is one word, not silent.** "Nope." or "Skip." Never 2 words, never an explanation. The user said "no matter what not supposed to be verbose" — treat no-op output as zero.
 
 ---
 

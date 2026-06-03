@@ -399,8 +399,14 @@ def main() -> int:
     if log_path:
         _log(f"logged: {log_path}  ({len(transcript_text)} chars)  event={event!r}")
 
-    # 2. Auto-distill at session end. Only on Stop, only once per session
-    #    (stop_hook_active guards the loop), and only if not disabled.
+    # 2. Auto-distill at session end. The hook no longer emits a `block`
+    #    decision: Claude Code surfaces every block as a "Stop hook error"
+    #    banner in the UI, which made the skill look broken even when the
+    #    block was just a quiet "please distill" nudge. The agent now relies
+    #    on SKILL.md to decide whether to distill at session end; the hook's
+    #    job is the log only. We still compute the smart-trigger verdict
+    #    (and the candidate list) for tests and for the internal log so the
+    #    decision is auditable, but nothing is printed to stdout.
     distill_on = (
         event == "Stop"
         and os.environ.get("SECONDBRAIN_SKIP_DISTILL") != "1"
@@ -410,10 +416,10 @@ def main() -> int:
         should_block, why = _should_distill(transcript_text)
         if should_block:
             cands = _extract_candidates(transcript_text)
-            decision = {"decision": "block",
-                        "reason": _distill_reason(log_path, cands)}
-            print(json.dumps(decision))
-            _log(f"requested distillation ({len(cands)} candidates): blocked stop once")
+            _log(
+                f"distill verdict=block reason={why} candidates={len(cands)} "
+                f"(no stdout — relying on agent + SKILL.md to act)"
+            )
         else:
             _log(f"skipped distill: {why}")
 
