@@ -373,20 +373,12 @@ def _distill_reason(
     log_path: "Path | None",
     candidates: list[dict] | None = None,
 ) -> str:
-    """Short instruction handed to the agent on Stop. Keep this terse —
-    the agent already knows the taxonomy and command shape from SKILL.md."""
-    cli = str(BRAIN_CLI)
-    db_flag = f" --db {DB_OVERRIDE}" if DB_OVERRIDE else ""
-    parts = ["Distill durable knowledge from this session into clean drawers (collections: Decisions / Preferences / Facts / Knowledge). Save nothing if nothing durable. Report a single one-line summary."]
+    """One-line instruction handed to the agent on Stop. The agent already
+    knows the four-collection taxonomy and CLI shape from SKILL.md; the
+    log path is the only signal it needs to find more context."""
     if log_path:
-        parts.append(f"Log: {log_path}")
-    parts.append(f"CLI: python3 {cli}{db_flag} add \"<title>\" \"<content>\" --collection <one of four> [--tags a,b]")
-    if candidates:
-        parts.append(f"Candidates ({len(candidates)}):")
-        for i, c in enumerate(candidates, 1):
-            prev = f"  ← {c['prev_line']}" if c["prev_line"] else ""
-            parts.append(f"  {i}. [{c['kind']}] {c['text']}{prev}")
-    return "\n".join(parts)
+        return f"Distill if durable. Log: {log_path}."
+    return "Distill if durable."
 
 
 def main() -> int:

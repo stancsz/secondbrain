@@ -162,35 +162,22 @@ class TestDistillReason(unittest.TestCase):
         reason = cap._distill_reason(log_path)
         self.assertIn("distill", reason.lower())
         self.assertIn(str(log_path), reason)
-        self.assertIn("add", reason)
 
     def test_reason_without_candidates_has_no_candidates_section(self):
         reason = cap._distill_reason(Path("logs/x.jsonl"), candidates=None)
         self.assertNotIn("Candidates", reason)
 
-    def test_reason_with_candidates_includes_section(self):
+    def test_reason_drops_candidates_even_when_provided(self):
+        # The reason must NEVER include a Candidates section, even when the
+        # hook computed some. The agent reads the log if it wants context.
         cands = [
             {"kind": "decision", "text": "going with the heuristic fix",
              "prev_line": "should we A or B?", "line_no": 42},
-            {"kind": "remember", "text": "remember this",
-             "prev_line": "", "line_no": 87},
         ]
         reason = cap._distill_reason(Path("logs/x.jsonl"), candidates=cands)
-        self.assertIn("Candidates", reason)
-        self.assertIn("[decision]", reason)
-        self.assertIn("going with the heuristic fix", reason)
-        self.assertIn("should we A or B?", reason)
-        self.assertIn("[remember]", reason)
-
-    def test_reason_names_all_four_taxonomy_collections(self):
-        reason = cap._distill_reason(None)
-        for collection in ("Decisions", "Preferences", "Facts", "Knowledge"):
-            self.assertIn(collection, reason,
-                          f"--collection {collection} must appear in the distill instruction")
-
-    def test_reason_instructs_collection_flag(self):
-        reason = cap._distill_reason(None)
-        self.assertIn("--collection", reason)
+        self.assertNotIn("Candidates", reason)
+        self.assertNotIn("going with the heuristic fix", reason)
+        self.assertNotIn("[decision]", reason)
 
     def test_reason_without_log_path_omits_log_line(self):
         reason = cap._distill_reason(None)
@@ -241,7 +228,8 @@ class TestHookProcess(unittest.TestCase):
         out = json.loads(proc.stdout)   # block decision emitted
         self.assertEqual(out["decision"], "block")
         self.assertIn("distill", out["reason"].lower())
-        self.assertIn("Candidates", out["reason"])
+        # The terse reason no longer surfaces candidates in the block output.
+        self.assertNotIn("Candidates", out["reason"])
 
     def test_stop_hook_active_does_not_block_again(self):
         # The second stop (after distillation) must be allowed through.
@@ -301,17 +289,18 @@ class TestHookProcess(unittest.TestCase):
                                   input=bad, capture_output=True, text=True, env=env)
             self.assertEqual(proc.returncode, 0)
 
-    def test_stop_block_reason_contains_all_four_taxonomy_collections(self):
-        # Smart trigger requires a substantive transcript to emit the block.
+    def test_stop_block_reason_is_one_line(self):
+        # The block reason must fit in one line — verbosity is the regression
+        # we keep tripping on, so pin it here. Anything with a newline is too
+        # much surface area for the agent's context.
         proc, _ = self._run(
-            {"hook_event_name": "Stop", "session_id": "taxtest"},
+            {"hook_event_name": "Stop", "session_id": "terse"},
             transcript=LONG_TRANSCRIPT_WITH_MARKERS,
         )
         self.assertEqual(proc.returncode, 0)
         reason = json.loads(proc.stdout)["reason"]
-        for collection in ("Decisions", "Preferences", "Facts", "Knowledge"):
-            self.assertIn(collection, reason,
-                          f"block reason must name the '{collection}' taxonomy collection")
+        self.assertNotIn("\n", reason,
+                         f"distill reason must be a single line, got: {reason!r}")
 
 
 class TestSmartTrigger(unittest.TestCase):
@@ -667,15 +656,22 @@ class TestStopHookProductionShape(unittest.TestCase):
                              f"distill reason ballooned to {len(reason)} chars "
                              "(budget 4096); the verbosity rule has regressed")
 
-    def test_candidates_are_real_user_text_only(self):
-        proc = self._run_hook(self._build_real_shape_transcript())
-        reason = json.loads(proc.stdout)["reason"]
-        # Real user lines that should surface as candidates.
-        self.assertIn("remember this for later", reason)
-        # File-dump prev_line from the original bug ('(Bash completed with no
-        # output)' style noise) must not appear as a prev: marker.
-        self.assertNotIn("(Bash completed", reason)
-        self.assertNotIn("File created successfully", reason)
+    def test_candidates_function_still_filters_tool_results(self):
+        # The candidates function continues to exist and stays correct; the
+        # terse reason just no longer surfaces its output. Run the function
+        # directly to assert the leak stays fixed.
+        cands = cap._extract_candidates(self._build_real_shape_transcript())
+        texts = [c["text"] for c in cands]
+        # Real user lines surface.
+        self.assertTrue(any("remember this for later" in t for t in texts),
+                        f"real user text missing from candidates: {texts}")
+        # Tool_result file dumps do not.
+        self.assertFalse(any("(Bash completed" in (c.get("prev_line", "") or "")
+                             for c in cands),
+                           f"tool_result prev_line leaked: {[c.get('prev_line') for c in cands]}")
+        # The 60x-repeated marker phrase from the file dump is bounded.
+        for c in cands:
+            self.assertLessEqual(len(c["text"]), cap.CANDIDATE_TEXT_MAX)
 
 
 if __name__ == "__main__":
