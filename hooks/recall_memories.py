@@ -51,7 +51,7 @@ Design rules:
 Env switches:
 - `SECONDBRAIN_SKIP_RECALL=1`     disable proactive recall for the session
 - `SECONDBRAIN_DB=/path/brain.db` use a non-default brain
-- `SECONDBRAIN_RECALL_LIMIT=N`    max drawers to surface (default 5)
+- `SECONDBRAIN_RECALL_LIMIT=N`    max drawers to surface (default 3)
 - `SECONDBRAIN_RECALL_COLLECTION` restrict recall to one collection
 """
 
@@ -184,30 +184,24 @@ def _recall(prompt: str, db_path: "str | None", limit: int,
     return results
 
 
-def _snippet(text: str, n: int = 160) -> str:
+def _snippet(text: str, n: int = 100) -> str:
     text = " ".join((text or "").split())
     return text[:n] + ("…" if len(text) > n else "")
 
 
 def _format_context(drawers: list) -> str:
-    """Render the recalled drawers as a compact context block for the model."""
-    lines = [
-        "🧠 secondbrain — possibly relevant notes you saved earlier "
-        "(recalled from your local brain, not training data):",
-        "",
-    ]
+    """Render the recalled drawers as a compact context block for the model.
+
+    Kept terse on purpose: this prints on every prompt, so it must not feel
+    like noise. Just the bullets — the SKILL.md tells the agent how to use
+    them and when to stay quiet about them."""
+    lines = ["🧠 secondbrain — possibly relevant notes (cite 8-char id, ignore if irrelevant):"]
     for d in drawers:
         coll = f" [{d['collection']}]" if d.get("collection") else ""
-        tags = f"  #{' #'.join(d['tags'])}" if d.get("tags") else ""
-        lines.append(f"- \"{d['title']}\"{coll} ({d['id'][:8]}){tags}")
+        lines.append(f"- \"{d['title']}\"{coll} ({d['id'][:8]})")
         snip = _snippet(d.get("content", ""))
         if snip:
             lines.append(f"  {snip}")
-    lines.append("")
-    lines.append(
-        "If any are relevant, use them and cite the 8-char id "
-        "(e.g. `brain show <id>` to open one). Ignore them if they're not."
-    )
     return "\n".join(lines)
 
 
@@ -222,9 +216,9 @@ def main() -> int:
 
     db_path = os.environ.get("SECONDBRAIN_DB", "").strip() or None
     try:
-        limit = int(os.environ.get("SECONDBRAIN_RECALL_LIMIT", "5"))
+        limit = int(os.environ.get("SECONDBRAIN_RECALL_LIMIT", "3"))
     except ValueError:
-        limit = 5
+        limit = 3
     limit = max(1, min(limit, 15))
     only_collection = os.environ.get("SECONDBRAIN_RECALL_COLLECTION", "").strip() or None
 

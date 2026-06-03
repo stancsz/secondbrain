@@ -157,19 +157,16 @@ class TestWriteLog(unittest.TestCase):
 
 
 class TestDistillReason(unittest.TestCase):
-    def test_reason_mentions_clean_drawers_not_transcript(self):
-        # Use a relative path so the assertion is portable across Windows
-        # and POSIX (Path() on Windows mangles "/tmp/..." to "\tmp\...").
+    def test_reason_mentions_distill(self):
         log_path = Path("logs") / "x.jsonl"
         reason = cap._distill_reason(log_path)
         self.assertIn("distill", reason.lower())
-        self.assertIn("never the raw transcript", reason.lower())
         self.assertIn(str(log_path), reason)
         self.assertIn("add", reason)
 
     def test_reason_without_candidates_has_no_candidates_section(self):
         reason = cap._distill_reason(Path("logs/x.jsonl"), candidates=None)
-        self.assertNotIn("## Candidates", reason)
+        self.assertNotIn("Candidates", reason)
 
     def test_reason_with_candidates_includes_section(self):
         cands = [
@@ -179,16 +176,11 @@ class TestDistillReason(unittest.TestCase):
              "prev_line": "", "line_no": 87},
         ]
         reason = cap._distill_reason(Path("logs/x.jsonl"), candidates=cands)
-        self.assertIn("## Candidates", reason)
+        self.assertIn("Candidates", reason)
         self.assertIn("[decision]", reason)
         self.assertIn("going with the heuristic fix", reason)
-        self.assertIn("line 42", reason)
         self.assertIn("should we A or B?", reason)
         self.assertIn("[remember]", reason)
-        # Second candidate has no prev_line; it must not render a `prev:` line.
-        # The "remember this" entry is on its own block, so the absence of
-        # a second `prev:` substring is a strong-enough signal here.
-        self.assertEqual(reason.count("prev:"), 1)
 
     def test_reason_names_all_four_taxonomy_collections(self):
         reason = cap._distill_reason(None)
@@ -202,14 +194,19 @@ class TestDistillReason(unittest.TestCase):
 
     def test_reason_without_log_path_omits_log_line(self):
         reason = cap._distill_reason(None)
-        self.assertNotIn("already saved as a log", reason)
+        self.assertNotIn("Log:", reason)
 
     def test_reason_with_log_path_includes_path(self):
-        # Use a relative path so it stays platform-neutral. Path("/abs/...")
-        # gets mangled to backslashes on Windows, breaking the substring check.
         log_path = Path("logs/2026-06-02__abc.jsonl")
         reason = cap._distill_reason(log_path)
         self.assertIn(str(log_path), reason)
+
+    def test_reason_is_terse(self):
+        # Sanity cap: the reason itself (no candidates) must fit in a few lines.
+        # If this assertion fires, the hook is going verbose again.
+        reason = cap._distill_reason(Path("logs/x.jsonl"))
+        self.assertLessEqual(reason.count("\n"), 5,
+                             "distill reason must stay terse (<=5 newlines, no candidates)")
 
 
 class TestHookProcess(unittest.TestCase):
@@ -244,7 +241,7 @@ class TestHookProcess(unittest.TestCase):
         out = json.loads(proc.stdout)   # block decision emitted
         self.assertEqual(out["decision"], "block")
         self.assertIn("distill", out["reason"].lower())
-        self.assertIn("## Candidates", out["reason"])
+        self.assertIn("Candidates", out["reason"])
 
     def test_stop_hook_active_does_not_block_again(self):
         # The second stop (after distillation) must be allowed through.
@@ -369,7 +366,7 @@ class TestSmartTrigger(unittest.TestCase):
         out = json.loads(proc.stdout)
         self.assertEqual(out["decision"], "block")
         # No markers → no Candidates section in the prompt.
-        self.assertNotIn("## Candidates", out["reason"])
+        self.assertNotIn("Candidates", out["reason"])
 
     def test_long_session_override_can_be_disabled(self):
         # Same transcript, but with LONG_SESSION_TURNS=999 → override off → no block.
@@ -456,13 +453,13 @@ class TestCandidates(unittest.TestCase):
         self.assertEqual(len(cands), 1)
 
     def test_cap_at_max_candidates(self):
-        # 30 unique matching lines, but MAX_CANDIDATES=10 → cap kicks in.
+        # 30 unique matching lines → cap kicks in at MAX_CANDIDATES.
         rows = [
             _user_row(f"let's go with option number {i} for the test")
             for i in range(30)
         ]
         cands = cap._extract_candidates("\n".join(rows) + "\n")
-        self.assertEqual(len(cands), 10)
+        self.assertEqual(len(cands), cap.MAX_CANDIDATES)
 
     def test_one_marker_per_line(self):
         # A line that matches both "decision" and "preference" only emits one.
@@ -490,6 +487,195 @@ class TestCandidates(unittest.TestCase):
         ok, why = cap._should_distill(LONG_TRANSCRIPT_NO_MARKERS)
         self.assertTrue(ok)
         self.assertEqual(why, "ok")
+
+    def test_tool_result_row_with_user_role_is_excluded(self):
+        # Regression: real Claude Code transcripts wrap tool_result blocks in
+        # role="user" messages. If we only check role, the entire file content
+        # returned by Read/Bash leaks in as a "user prompt" and the candidate
+        # list fills with multi-page file dumps. The filter must reject any
+        # row whose content contains a tool_result/tool_use block.
+        tool_result_row = json.dumps({
+            "type": "user",
+            "message": {"role": "user", "content": [{
+                "type": "tool_result", "tool_use_id": "x",
+                "content": "decided to save this. TODO fix. [[wikilink]] " * 100,
+            }]},
+        })
+        real_user_row = _user_row(
+            "remember this: the real durable knowledge from the session"
+        )
+        mixed = tool_result_row + "\n" + real_user_row + "\n"
+        cands = cap._extract_candidates(mixed)
+        texts = [c["text"] for c in cands]
+        # Tool-result content must not appear.
+        self.assertFalse(any("[[wikilink]]" in t for t in texts),
+                         f"tool_result text leaked into candidates: {texts}")
+        # Real user line still surfaces.
+        self.assertTrue(any("real durable knowledge" in t for t in texts))
+
+    def test_candidate_text_is_clipped(self):
+        # A 5000-char pasted line must not produce a 5000-char candidate.
+        long_text = "let's go with " + ("X" * 5000)
+        rows = _user_row(long_text)
+        cands = cap._extract_candidates(rows + "\n")
+        self.assertEqual(len(cands), 1)
+        self.assertLessEqual(len(cands[0]["text"]), cap.CANDIDATE_TEXT_MAX,
+                             "candidate text must respect CANDIDATE_TEXT_MAX")
+
+
+# A real Claude Code Stop-hook payload that triggered the original
+# tool-result-leak bug in production on 2026-06-02: the user asked a
+# single substantive question, then Claude used Read/Bash tools whose
+# results contained marker words ("decision", "TODO", "[[wikilink]]")
+# inside multi-KB file dumps. The buggy filter saw every tool_result
+# row as a user prompt and surfaced whole files as `[decision]` candidates
+# with prev_line = "(Bash completed with no output)".
+#
+# The shape below mirrors what was on disk: msg.role == "user" with
+# content = [{"type": "tool_result", "content": "<file dump>"}].
+def _tool_result_row(payload_text: str, tool_use_id: str = "toolu_x") -> str:
+    return json.dumps({
+        "type": "user",
+        "message": {"role": "user", "content": [{
+            "type": "tool_result",
+            "tool_use_id": tool_use_id,
+            "content": payload_text,
+        }]},
+    })
+
+
+def _assistant_tool_use_row(tool_use_id: str = "toolu_x") -> str:
+    return json.dumps({
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [{
+            "type": "tool_use", "id": tool_use_id, "name": "Read",
+            "input": {"file_path": "SKILL.md"},
+        }]},
+    })
+
+
+# Multi-KB simulated file dump that contains every marker word the hook
+# regex looks for, exactly as a Read of SKILL.md would.
+LEAKY_FILE_DUMP = (
+    "Trigger that warrants an `add`: decision, decided, going with, "
+    "let's go with, I prefer, I always, I never, from now on, remember "
+    "this, save this, note that, I'm working on, my project is, "
+    "[[wikilink]] [[Another Title]] TODO FIXME XXX. " * 60
+)
+
+
+class TestStopHookProductionShape(unittest.TestCase):
+    """End-to-end regression for the 2026-06-02 tool-result-leak bug.
+
+    The transcript shape, marker leak, and verbosity blow-up that prompted
+    this test all came from a real Stop-hook payload. If any of these asserts
+    fire again, the hook is regressing the user's '≤1 line per event' rule."""
+
+    def _build_real_shape_transcript(self) -> str:
+        # 8 real user prompts (~1700 chars) interleaved with assistant
+        # tool_use + user tool_result rows whose content is a multi-KB dump
+        # containing decision/TODO/wikilink markers.
+        rows = []
+        rows.append(_user_row(
+            "I want to remember this for later: the secondbrain install.sh has "
+            "a Windows-specific encoding bug. The fix is to set "
+            "PYTHONIOENCODING=utf-8 in install.sh before the heredoc runs."
+        ))
+        rows.append(_assistant_tool_use_row("t1"))
+        rows.append(_tool_result_row(LEAKY_FILE_DUMP, "t1"))
+        rows.append(_user_row(
+            "Specifically the embedded Python heredoc prints a checkmark via "
+            "print() and the Windows default stdout encoding is cp1252, which "
+            "cannot encode the U+2705 character and raises mid-execution."
+        ))
+        rows.append(_assistant_tool_use_row("t2"))
+        rows.append(_tool_result_row(LEAKY_FILE_DUMP, "t2"))
+        rows.append(_user_row(
+            "Let's go with the heuristic pre-extraction fix combined with a "
+            "smarter trigger that skips the block for short or marker-free "
+            "sessions; this is the recommendation we agreed on."
+        ))
+        rows.append(_assistant_tool_use_row("t3"))
+        rows.append(_tool_result_row(LEAKY_FILE_DUMP, "t3"))
+        rows.append(_user_row(
+            "I prefer terse error messages and the kind field for candidates "
+            "should be one of decision, preference, remember, fact, wikilink, "
+            "or todo so the agent can filter quickly without re-reading the log."
+        ))
+        rows.append(_user_row(
+            "From now on, all print statements in hooks should use ASCII or "
+            "set UTF-8 explicitly to avoid this class of bug on Windows; "
+            "OK let's wrap this up, save the changes, and push a PR."
+        ))
+        rows.append(_user_row(
+            "What about the long-session override where we skip the marker "
+            "check entirely for sessions above LONG_SESSION_TURNS turns? Add "
+            "a test that covers both the override-on and override-off cases, "
+            "and make sure the chars and turns gates still pass independently "
+            "so we don't accidentally weaken the smart trigger on real sessions."
+        ))
+        rows.append(_user_row(
+            "Workaround for users on Windows: prepend PYTHONIOENCODING=utf-8 "
+            "to the install command, or set it inside the script directly."
+        ))
+        rows.append(_user_row(
+            "But there's also a separate silent-no-write issue on the first "
+            "run where the heredoc reports success but settings.json mtime "
+            "proves the json.dump never lands; running the same logic "
+            "directly outside the heredoc works fine, so it's something "
+            "about the way the embedded interpreter handles stdout flushing."
+        ))
+        return "\n".join(rows) + "\n"
+
+    def _run_hook(self, transcript: str):
+        env = dict(os.environ)
+        with tempfile.TemporaryDirectory() as td:
+            logs = Path(td) / "logs"
+            tpath = Path(td) / "t.jsonl"
+            tpath.write_text(transcript, encoding="utf-8")
+            env["SECONDBRAIN_LOGS_DIR"] = str(logs)
+            proc = subprocess.run(
+                [sys.executable, str(HOOK)],
+                input=json.dumps({
+                    "hook_event_name": "Stop", "session_id": "leakbug",
+                    "transcript_path": str(tpath),
+                }),
+                capture_output=True, text=True, env=env,
+            )
+            return proc
+
+    def test_no_file_dump_leaks_into_reason(self):
+        proc = self._run_hook(self._build_real_shape_transcript())
+        self.assertEqual(proc.returncode, 0)
+        out = json.loads(proc.stdout)
+        self.assertEqual(out["decision"], "block")
+        reason = out["reason"]
+        # The 60x-repeated marker phrase from the file dump must never appear
+        # in the candidate list. If it does, the tool_result filter regressed.
+        leaked = LEAKY_FILE_DUMP[:50]
+        self.assertNotIn(leaked, reason,
+                         "tool_result content leaked into the distill reason")
+
+    def test_reason_size_is_bounded(self):
+        # Even with 13 user turns + 3 multi-KB tool results, the reason the
+        # hook sends back must stay terse (≤1 line per event rule). 4 KB is
+        # the budget; without the fix, the original bug emitted ~30 KB.
+        proc = self._run_hook(self._build_real_shape_transcript())
+        self.assertEqual(proc.returncode, 0)
+        reason = json.loads(proc.stdout)["reason"]
+        self.assertLessEqual(len(reason), 4096,
+                             f"distill reason ballooned to {len(reason)} chars "
+                             "(budget 4096); the verbosity rule has regressed")
+
+    def test_candidates_are_real_user_text_only(self):
+        proc = self._run_hook(self._build_real_shape_transcript())
+        reason = json.loads(proc.stdout)["reason"]
+        # Real user lines that should surface as candidates.
+        self.assertIn("remember this for later", reason)
+        # File-dump prev_line from the original bug ('(Bash completed with no
+        # output)' style noise) must not appear as a prev: marker.
+        self.assertNotIn("(Bash completed", reason)
+        self.assertNotIn("File created successfully", reason)
 
 
 if __name__ == "__main__":

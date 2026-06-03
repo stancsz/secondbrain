@@ -74,7 +74,8 @@ DB_OVERRIDE = os.environ.get("SECONDBRAIN_DB", "").strip()
 MIN_USER_CHARS = int(os.environ.get("SECONDBRAIN_MIN_USER_CHARS", "1500"))
 MIN_TURNS = int(os.environ.get("SECONDBRAIN_MIN_TURNS", "4"))
 LONG_SESSION_TURNS = int(os.environ.get("SECONDBRAIN_LONG_SESSION_TURNS", "20"))
-MAX_CANDIDATES = int(os.environ.get("SECONDBRAIN_MAX_CANDIDATES", "10"))
+MAX_CANDIDATES = int(os.environ.get("SECONDBRAIN_MAX_CANDIDATES", "5"))
+CANDIDATE_TEXT_MAX = int(os.environ.get("SECONDBRAIN_CANDIDATE_TEXT_MAX", "200"))
 
 
 # Heuristic marker vocabulary. The agent and the SKILL.md prose use the same
@@ -161,11 +162,19 @@ def _extract_text(value) -> "str | None":
     shape. Claude Code transcripts nest user text as
     `message.content = [{"type": "text", "text": "..."}]`, but older/other
     formats use a bare string or a `{"text": "..."}` dict. Handles all of
-    them, recursively, and always returns a string or None — never a list."""
+    them, recursively, and always returns a string or None — never a list.
+
+    Critically, tool-result and tool-use blocks are skipped — they are
+    routed through `role: "user"` messages in the Anthropic API but they
+    are NOT the user's voice (they're file dumps, command output, etc.).
+    Letting them through made the candidate extractor surface whole file
+    contents as `[decision]` candidates."""
     if isinstance(value, str):
         return value
     if isinstance(value, dict):
-        # A message wrapper ({"content": ...}) or a single block ({"text": ...}).
+        # Skip anything that is or wraps a tool call/result — never user voice.
+        if value.get("type") in ("tool_result", "tool_use"):
+            return None
         if "content" in value:
             return _extract_text(value["content"])
         if value.get("type") in (None, "text") and isinstance(value.get("text"), str):
@@ -179,18 +188,33 @@ def _extract_text(value) -> "str | None":
     return None
 
 
+def _has_tool_block(content) -> bool:
+    """True if content is or contains a tool_result/tool_use block. Used to
+    reject `role: "user"` rows that are actually tool plumbing, not prompts."""
+    if isinstance(content, dict):
+        return content.get("type") in ("tool_result", "tool_use")
+    if isinstance(content, list):
+        return any(_has_tool_block(b) for b in content)
+    return False
+
+
 def _is_user_prompt_row(row: dict) -> bool:
     """A `type=="user"` row that actually carries the user's voice.
 
-    Tool-result rows are also typed "user" but have no `role` field; we
-    exclude them so the smart trigger and candidate extractor only see what
-    the user actually said (not the agent's own tool output, the hook's own
-    JSON, etc.)."""
+    Tool-result rows are also typed "user" (the Anthropic API wraps
+    tool_result blocks in user messages) but they are not real user input.
+    We reject them by checking the content for tool blocks — checking
+    `role` alone is not enough."""
     if not isinstance(row, dict):
         return False
-    msg = row.get("message")
-    role = (msg or {}).get("role") or row.get("role")
-    return role == "user"
+    msg = row.get("message") or {}
+    role = msg.get("role") or row.get("role")
+    if role != "user":
+        return False
+    content = msg.get("content", row.get("content"))
+    if _has_tool_block(content):
+        return False
+    return True
 
 
 def _user_turns_and_text(transcript_text: str) -> tuple[int, list[str]]:
@@ -241,15 +265,20 @@ def _should_distill(transcript_text: str) -> tuple[bool, str]:
     return True, "ok"
 
 
+def _clip(text: str, n: int = None) -> str:
+    """Squash whitespace and truncate; keeps candidate lines from being page-long."""
+    n = n if n is not None else CANDIDATE_TEXT_MAX
+    text = " ".join((text or "").split())
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
 def _extract_candidates(transcript_text: str) -> list[dict]:
     """Surface up to MAX_CANDIDATES user lines that look like durable knowledge.
 
     Returns a list of dicts: {"kind", "text", "prev_line", "line_no"}.
-    `prev_line` is the prior user line (1 line of context) so the agent
-    doesn't have to re-read the log to interpret "going with X". Lines
-    are deduped by (kind, text) and capped at MAX_CANDIDATES. One marker
-    per line — the first matching kind wins."""
-    # First pass: collect (file_line_no, text) for each user-prompt row.
+    Each text/prev_line is clipped to CANDIDATE_TEXT_MAX chars — without this,
+    a pasted file or long block dominates the candidate list and the agent's
+    context. Lines are deduped by (kind, text) and capped at MAX_CANDIDATES."""
     user_rows: list[tuple[int, str]] = []
     for file_line_no, line in enumerate(transcript_text.splitlines(), start=1):
         if not line.strip():
@@ -270,13 +299,14 @@ def _extract_candidates(transcript_text: str) -> list[dict]:
     for file_line_no, text in user_rows:
         for kind, pattern in _MARKER_PATTERNS:
             if pattern.search(text):
-                key = (kind, text)
+                clipped = _clip(text)
+                key = (kind, clipped)
                 if key not in seen:
                     seen.add(key)
                     candidates.append({
                         "kind": kind,
-                        "text": text,
-                        "prev_line": prev_user_line,
+                        "text": clipped,
+                        "prev_line": _clip(prev_user_line),
                         "line_no": file_line_no,
                     })
                     if len(candidates) >= MAX_CANDIDATES:
@@ -343,52 +373,20 @@ def _distill_reason(
     log_path: "Path | None",
     candidates: list[dict] | None = None,
 ) -> str:
-    """The instruction handed back to the agent on Stop. It asks for clean,
-    distilled drawers — not the raw transcript, which is already on disk.
-
-    When `candidates` is non-empty, prepends a "Candidates" section so the
-    agent reviews a small filtered list rather than re-reading the full
-    transcript. This is the speed/quality win of the smart trigger."""
+    """Short instruction handed to the agent on Stop. Keep this terse —
+    the agent already knows the taxonomy and command shape from SKILL.md."""
     cli = str(BRAIN_CLI)
     db_flag = f" --db {DB_OVERRIDE}" if DB_OVERRIDE else ""
-    where = f"\nThe full raw transcript is already saved as a log at:\n  {log_path}\n" if log_path else ""
-
-    candidates_block = ""
+    parts = ["Distill durable knowledge from this session into clean drawers (collections: Decisions / Preferences / Facts / Knowledge). Save nothing if nothing durable. Report a single one-line summary."]
+    if log_path:
+        parts.append(f"Log: {log_path}")
+    parts.append(f"CLI: python3 {cli}{db_flag} add \"<title>\" \"<content>\" --collection <one of four> [--tags a,b]")
     if candidates:
-        lines = [
-            "I've already done a heuristic pass and surfaced these candidate "
-            "lines that look like durable knowledge. Review them, save the "
-            "good ones as drawers, and ignore the noise. The full raw log "
-            "is at the path above if you need more context.\n",
-            "## Candidates\n",
-        ]
+        parts.append(f"Candidates ({len(candidates)}):")
         for i, c in enumerate(candidates, 1):
-            prev = f"\n   prev: \"{c['prev_line']}\"" if c["prev_line"] else ""
-            lines.append(
-                f"{i}. [{c['kind']}] \"{c['text']}\"  (line {c['line_no']}){prev}"
-            )
-        candidates_block = "\n".join(lines) + "\n\n"
-
-    return (
-        "Before you finish, distill this conversation into the clean brain."
-        f"{where}\n"
-        f"{candidates_block}"
-        "Extract ONLY durable, reusable knowledge. Save each item as its own "
-        "titled drawer — never the raw transcript. Always set --collection to "
-        "one of the four taxonomy values below:\n\n"
-        "  --collection Decisions   concrete choices made ('we went with X', 'chose X over Y')\n"
-        "  --collection Preferences lasting style/approach ('I prefer X', 'always/never Y')\n"
-        "  --collection Facts       persistent context (stack, deadlines, people, project name)\n"
-        "  --collection Knowledge   reusable how-to, patterns, lessons learned, concepts\n\n"
-        f"Command:\n  python3 {cli}{db_flag} add \"<title>\" \"<content>\" "
-        "--collection <one of the four> [--tags a,b]\n\n"
-        "Write a clear title and a self-contained 1–3 sentence body that will "
-        "still make sense months from now without this chat around it. "
-        "Add [[wikilinks]] to related notes where natural.\n\n"
-        "If this conversation has nothing durable (a quick question, throwaway "
-        "debugging, small talk), save NOTHING and just stop. Quality over "
-        "quantity — the raw log is preserved either way."
-    )
+            prev = f"  ← {c['prev_line']}" if c["prev_line"] else ""
+            parts.append(f"  {i}. [{c['kind']}] {c['text']}{prev}")
+    return "\n".join(parts)
 
 
 def main() -> int:

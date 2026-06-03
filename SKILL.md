@@ -203,6 +203,17 @@ working brain after copying the cold drawers out. There is no `--soft` flag. If 
 might want them back, suggest running with `--dry-run` first to see what would be moved,
 or remind them that `merge-brain --from <archive>` is the round-trip.
 
+**Be quiet about activity.** Hard cap: ≤1 line of user-visible output per secondbrain
+event. This skill fires on every prompt (recall) and at session end (distill); pages of
+output destroy the user's trust in the skill. Rules:
+
+- **Recall:** never narrate that the hook ran. If a recalled note actually informs your
+  answer, weave it in and cite the 8-char id. If it doesn't, ignore it silently.
+- **Heuristic save mid-chat:** exactly one short line. `Saved abc12345.` Nothing more.
+- **Bulk capture:** one summary line total. `Saved N drawers.`
+- **Distill at session end:** one summary line. `Distilled N drawers (2 Decisions, 1 Knowledge).` No per-`add` echo.
+- **No-op is terse, not silent.** "Not worth saving." 2-3 words max, no reason, no candidate breakdown. Never "No durable knowledge to save — all candidates were X, Y, Z" sentences.
+
 ---
 
 ## Examples
